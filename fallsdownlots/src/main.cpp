@@ -54,9 +54,13 @@ void loop()
     display->update(t);
     motor->update(t);
 
-    float speed = -1. + 2. * (float)analogRead(POT_PIN) / 1024;
-
+    // float speed = -1. + 2. * (float)analogRead(POT_PIN) / 1024;
+    float speed = imu->angle() * 180. / PI / 25.;
     motor->set_speed(speed);
-    display->draw_text("A: %.1f\nS: %u", imu->angle() * 180. / PI, motor->m_step_period_us);
+    if (t - last_update_t > 100)
+    {
+      display->draw_text("A: %.1f\nS: %.2f", imu->angle() * 180. / PI, speed);
+      last_update_t = t;
+    }
   }
 }
