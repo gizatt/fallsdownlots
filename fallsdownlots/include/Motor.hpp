@@ -9,10 +9,16 @@ const uint8_t stepper_phase_chart[16] = {
     0, 1, 0, 1,
     1, 0, 0, 1};
 
+float notes_to_freq[] = {
+    3520., 3729., 2093, 2349., 2637., 2793., 3135., 4186};
+char notes[] = {
+    "ccdcfeeccdcgffcchafedbbafgffff"};
+int n_notes = 27;
+
 // Timer interrupt stepping for *all* stepper motors.
 static IntervalTimer stepper_update_timer;
 static bool stepper_update_timer_started;
-static const uint32_t stepper_update_timer_period_us = 100;
+static const uint32_t stepper_update_timer_period_us = 5;
 static volatile int n_stepper_motors;
 class StepperMotor;
 static StepperMotor *steppers[2];
@@ -64,7 +70,7 @@ public:
         }
     }
 
-    const uint32_t UPDATE_PERIOD = 100; // ms
+    const uint32_t UPDATE_PERIOD = 500; // ms
     const float MAX_SPEED = 5000.;      // updates / sec
 
     StepperMotor(uint8_t en_A, uint8_t fwd_A, uint8_t rev_A,
@@ -72,7 +78,7 @@ public:
                                                                m_en_B(en_B), m_fwd_B(fwd_B), m_rev_B(rev_B),
                                                                m_phase(0), m_speed(0.0),
                                                                m_stepper_update_timer_last_update(micros()), m_step_period_us(1E6),
-                                                               m_enable(1), m_last_update_t(millis())
+                                                               m_enable(1), m_last_update_t(millis()), m_music_k(0)
     {
         pinMode(m_en_A, OUTPUT);
         pinMode(m_en_B, OUTPUT);
@@ -98,7 +104,7 @@ public:
         noInterrupts();
         m_speed = max(min(speed, 1.0), -1.0);
         m_enable = (abs(m_speed) <= 1E-5);
-        m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(speed)));
+        // m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(speed)));
         interrupts();
     }
 
@@ -107,13 +113,15 @@ public:
         if (t - m_last_update_t > UPDATE_PERIOD)
         {
             m_last_update_t = t;
-
+            m_music_k = (m_music_k + 1) % n_notes;
+            m_step_period_us = (uint32_t)1E6 / notes_to_freq[notes[m_music_k] - 'a'];
             digitalWrite(m_en_A, !m_enable);
             digitalWrite(m_en_B, !m_enable);
         }
     }
 
 private:
+    uint32_t m_music_k;
     bool m_enable;
     uint32_t m_last_update_t;
 };
