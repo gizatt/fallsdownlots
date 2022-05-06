@@ -12,7 +12,7 @@ const uint8_t stepper_phase_chart[16] = {
 // Timer interrupt stepping for *all* stepper motors.
 static IntervalTimer stepper_update_timer;
 static bool stepper_update_timer_started;
-static const uint32_t stepper_update_timer_period_us = 100;
+static const uint32_t stepper_update_timer_period_us = 300;
 static volatile int n_stepper_motors;
 class StepperMotor;
 static StepperMotor *steppers[2];
@@ -29,16 +29,10 @@ public:
 
     volatile uint8_t m_phase;
     volatile float m_speed;
-    volatile float m_speed_target;
     volatile uint32_t m_stepper_update_timer_last_update;
-    volatile uint32_t m_stepper_update_timer_last_update_of_speed;
     volatile uint32_t m_step_period_us;
 
-    const float MAX_INCREASE_OF_SPEED = 0.05;
-    const uint32_t SPEED_UPDATE_PERIOD_US = 200;
-
-    static void
-    do_timer_setup()
+    static void do_timer_setup()
     {
         n_stepper_motors = 0;
         stepper_update_timer.begin(advance_steppers, stepper_update_timer_period_us);
@@ -49,31 +43,7 @@ public:
         for (int i = 0; i < n_stepper_motors; i++)
         {
             StepperMotor *stepper = steppers[i];
-
-            // Update commanded speed, only increasing speed at a controlled rate.
-            uint32_t dt = t - stepper->m_stepper_update_timer_last_update_of_speed;
-            if (dt >= stepper->SPEED_UPDATE_PERIOD_US)
-            {
-                if (abs(stepper->m_speed_target) - abs(stepper->m_speed) > stepper->MAX_INCREASE_OF_SPEED)
-                {
-                    if (stepper->m_speed > 0)
-                    {
-                        stepper->m_speed += stepper->MAX_INCREASE_OF_SPEED;
-                    }
-                    else
-                    {
-                        stepper->m_speed -= stepper->MAX_INCREASE_OF_SPEED;
-                    }
-                }
-                else
-                {
-                    stepper->m_speed = stepper->m_speed_target;
-                }
-                stepper->m_stepper_update_timer_last_update_of_speed = t;
-                stepper->m_step_period_us = (uint32_t)max(1., 1E6 / (stepper->MAX_SPEED * abs(stepper->m_speed)));
-            }
-
-            dt = t - stepper->m_stepper_update_timer_last_update;
+            uint32_t dt = t - stepper->m_stepper_update_timer_last_update;
             if (dt > stepper->m_step_period_us)
             {
                 digitalWrite(stepper->m_fwd_A, stepper_phase_chart[stepper->m_phase * 4 + 0]);
@@ -100,10 +70,8 @@ public:
     StepperMotor(uint8_t en_A, uint8_t fwd_A, uint8_t rev_A,
                  uint8_t en_B, uint8_t fwd_B, uint8_t rev_B) : m_en_A(en_A), m_fwd_A(fwd_A), m_rev_A(rev_A),
                                                                m_en_B(en_B), m_fwd_B(fwd_B), m_rev_B(rev_B),
-                                                               m_phase(0), m_speed(0.0), m_speed_target(0.0),
-                                                               m_stepper_update_timer_last_update(micros()),
-                                                               m_stepper_update_timer_last_update_of_speed(micros()),
-                                                               m_step_period_us(1E6),
+                                                               m_phase(0), m_speed(0.0),
+                                                               m_stepper_update_timer_last_update(micros()), m_step_period_us(1E6),
                                                                m_enable(1), m_last_update_t(millis())
     {
         pinMode(m_en_A, OUTPUT);
@@ -128,8 +96,9 @@ public:
     void set_speed(float speed)
     {
         noInterrupts();
-        m_speed_target = max(min(speed, 1.0), -1.0);
+        m_speed = max(min(speed, 1.0), -1.0);
         m_enable = (abs(m_speed) <= 1E-5);
+        m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(m_speed)));
         interrupts();
     }
 
