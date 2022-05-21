@@ -12,7 +12,7 @@ const uint8_t stepper_phase_chart[16] = {
 // Timer interrupt stepping for *all* stepper motors.
 static IntervalTimer stepper_update_timer;
 static bool stepper_update_timer_started;
-static const uint32_t stepper_update_timer_period_us = 300;
+static const uint32_t stepper_update_timer_period_us = 100;
 static volatile int n_stepper_motors;
 class StepperMotor;
 static StepperMotor *steppers[2];
@@ -65,7 +65,7 @@ public:
     }
 
     const uint32_t UPDATE_PERIOD = 100; // ms
-    const float MAX_SPEED = 2500.;      // updates / sec
+    const float MAX_SPEED = 1000.;      // updates / sec
 
     StepperMotor(uint8_t en_A, uint8_t fwd_A, uint8_t rev_A,
                  uint8_t en_B, uint8_t fwd_B, uint8_t rev_B) : m_en_A(en_A), m_fwd_A(fwd_A), m_rev_A(rev_A),
@@ -97,7 +97,7 @@ public:
     {
         noInterrupts();
         m_speed = max(min(speed, 1.0), -1.0);
-        m_enable = (abs(m_speed) <= 1E-5);
+        m_enable = (abs(m_speed) >= 1E-5);
         m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(m_speed)));
         interrupts();
     }
@@ -108,8 +108,8 @@ public:
         {
             m_last_update_t = t;
 
-            digitalWrite(m_en_A, !m_enable);
-            digitalWrite(m_en_B, !m_enable);
+            digitalWrite(m_en_A, m_enable);
+            digitalWrite(m_en_B, m_enable);
         }
     }
 
