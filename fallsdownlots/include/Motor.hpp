@@ -13,6 +13,7 @@ const uint8_t stepper_phase_chart[16] = {
     1, 0, 0, 1};
 */
 const uint32_t PWM_PERIOD_US = 1000;
+/*
 const uint32_t N_PHASES = 16;
 // clang-format off
 const uint32_t stepper_phase_chart[N_PHASES * 4] = {
@@ -34,11 +35,49 @@ const uint32_t stepper_phase_chart[N_PHASES * 4] = {
         PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69,
 };
 //clang-format on
+*/
+const uint32_t N_PHASES = 32;
+// clang-format off
+const uint32_t stepper_phase_chart[N_PHASES * 4] = {
+        PWM_PERIOD_US*1.00, PWM_PERIOD_US*0.00, PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50,
+        PWM_PERIOD_US*0.99, PWM_PERIOD_US*0.01, PWM_PERIOD_US*0.60, PWM_PERIOD_US*0.40,
+        PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31,
+        PWM_PERIOD_US*0.92, PWM_PERIOD_US*0.08, PWM_PERIOD_US*0.78, PWM_PERIOD_US*0.22,
+        PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15,
+        PWM_PERIOD_US*0.78, PWM_PERIOD_US*0.22, PWM_PERIOD_US*0.92, PWM_PERIOD_US*0.08,
+        PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04,
+        PWM_PERIOD_US*0.60, PWM_PERIOD_US*0.40, PWM_PERIOD_US*0.99, PWM_PERIOD_US*0.01,
+        PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50, PWM_PERIOD_US*1.00, PWM_PERIOD_US*0.00,
+        PWM_PERIOD_US*0.40, PWM_PERIOD_US*0.60, PWM_PERIOD_US*0.99, PWM_PERIOD_US*0.01,
+        PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04,
+        PWM_PERIOD_US*0.22, PWM_PERIOD_US*0.78, PWM_PERIOD_US*0.92, PWM_PERIOD_US*0.08,
+        PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15,
+        PWM_PERIOD_US*0.08, PWM_PERIOD_US*0.92, PWM_PERIOD_US*0.78, PWM_PERIOD_US*0.22,
+        PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31,
+        PWM_PERIOD_US*0.01, PWM_PERIOD_US*0.99, PWM_PERIOD_US*0.60, PWM_PERIOD_US*0.40,
+        PWM_PERIOD_US*0.00, PWM_PERIOD_US*1.00, PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50,
+        PWM_PERIOD_US*0.01, PWM_PERIOD_US*0.99, PWM_PERIOD_US*0.40, PWM_PERIOD_US*0.60,
+        PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69,
+        PWM_PERIOD_US*0.08, PWM_PERIOD_US*0.92, PWM_PERIOD_US*0.22, PWM_PERIOD_US*0.78,
+        PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85,
+        PWM_PERIOD_US*0.22, PWM_PERIOD_US*0.78, PWM_PERIOD_US*0.08, PWM_PERIOD_US*0.92,
+        PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96,
+        PWM_PERIOD_US*0.40, PWM_PERIOD_US*0.60, PWM_PERIOD_US*0.01, PWM_PERIOD_US*0.99,
+        PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.00, PWM_PERIOD_US*1.00,
+        PWM_PERIOD_US*0.60, PWM_PERIOD_US*0.40, PWM_PERIOD_US*0.01, PWM_PERIOD_US*0.99,
+        PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96,
+        PWM_PERIOD_US*0.78, PWM_PERIOD_US*0.22, PWM_PERIOD_US*0.08, PWM_PERIOD_US*0.92,
+        PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85,
+        PWM_PERIOD_US*0.92, PWM_PERIOD_US*0.08, PWM_PERIOD_US*0.22, PWM_PERIOD_US*0.78,
+        PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69,
+        PWM_PERIOD_US*0.99, PWM_PERIOD_US*0.01, PWM_PERIOD_US*0.40, PWM_PERIOD_US*0.60,
+};
+// clang-format on
 
 // Timer interrupt stepping for *all* stepper motors.
 static IntervalTimer stepper_update_timer;
 static bool stepper_update_timer_started;
-static const uint32_t stepper_update_timer_period_us = 100;
+static const uint32_t stepper_update_timer_period_us = 50;
 static volatile int n_stepper_motors;
 class StepperMotor;
 static StepperMotor *steppers[2];
@@ -68,6 +107,11 @@ public:
         uint32_t t = micros();
         for (int i = 0; i < n_stepper_motors; i++)
         {
+            // PWM is implemented by breaking time (from micros()) into PWM_PERIOD_US
+            // chunks, and being "on" for whatever period of that is requested. When
+            // the update period gets sufficiently big, aliasing will begin corrupting this
+            // signal; but since we update an order of magnitude faster than we're able to
+            // actually spin the motor, that winds up being OK.
             StepperMotor *stepper = steppers[i];
             uint32_t pwm_frac = t % PWM_PERIOD_US;
             digitalWrite(stepper->m_fwd_A, stepper_phase_chart[stepper->m_phase * 4 + 0] < pwm_frac);
@@ -93,7 +137,7 @@ public:
     }
 
     const uint32_t UPDATE_PERIOD = 100; // ms
-    const float MAX_SPEED = 1000.;      // updates / sec
+    const float MAX_SPEED = 500;        // updates / sec
 
     StepperMotor(uint8_t en_A, uint8_t fwd_A, uint8_t rev_A,
                  uint8_t en_B, uint8_t fwd_B, uint8_t rev_B) : m_en_A(en_A), m_fwd_A(fwd_A), m_rev_A(rev_A),

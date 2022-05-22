@@ -48,6 +48,7 @@ uint32_t last_publish_t_us = 0;
 char print_buf[256];
 
 float err_int = 0.;
+float avg_speed = 0.0;
 void loop()
 {
   auto t = millis();
@@ -66,21 +67,20 @@ void loop()
   float dangle_deg = imu->dangle() * 180. / PI;
   float speed = 0.;
   float AVG_SPEED_ALPHA = 0.99;
-  float avg_speed = 0.;
 
   //
-  float kp = 0.1;
+  float kp = 0.3;
   float kd = 0.001;
-  float ki = 0.;
-  float kid = 000.; // avg speed of 0.001 -> 1 deg correction.
+  float ki = 10.;
+  float kid = 10.; // avg speed of 1 -> 1 deg correction.
 
-  float angle_target = angle_target_const + ki * err_int - kid * avg_speed;
+  float angle_target = angle_target_const + ki * err_int + kid * avg_speed;
 
   if (abs(angle_deg - angle_target) <= 30.)
   {
     speed = (angle_target - angle_deg) * kp + (0. - dangle_deg) * kd;
   }
-
+  speed = min(max(speed, -1.), 1.);
   motor->set_speed(speed);
   avg_speed = avg_speed * AVG_SPEED_ALPHA + (1. - AVG_SPEED_ALPHA) * speed;
 
@@ -89,7 +89,7 @@ void loop()
   uint32_t dt = t_us - last_update_t_us;
   last_update_t_us = t_us;
   err_int += speed * ((float)dt) / 1E6;
-  err_int = min(max(err_int, -1.), 1.);
+  err_int = min(max(err_int, -0.1), 0.1);
 
   if (t - last_update_t > 100)
   {
