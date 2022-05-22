@@ -3,11 +3,37 @@
 #include "Arduino.h"
 
 // Phase chart
+
+/*
+const uint32_t N_PHASES = 4;
 const uint8_t stepper_phase_chart[16] = {
     1, 0, 1, 0,
     0, 1, 1, 0,
     0, 1, 0, 1,
     1, 0, 0, 1};
+*/
+const uint32_t PWM_PERIOD_US = 1000;
+const uint32_t N_PHASES = 16;
+// clang-format off
+const uint32_t stepper_phase_chart[N_PHASES * 4] = {
+        PWM_PERIOD_US*1.00, PWM_PERIOD_US*0.00, PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50,
+        PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31,
+        PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15,
+        PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04,
+        PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50, PWM_PERIOD_US*1.00, PWM_PERIOD_US*0.00,
+        PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04,
+        PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15,
+        PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31,
+        PWM_PERIOD_US*0.00, PWM_PERIOD_US*1.00, PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50,
+        PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69,
+        PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85,
+        PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96,
+        PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.50, PWM_PERIOD_US*0.00, PWM_PERIOD_US*1.00,
+        PWM_PERIOD_US*0.69, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.96,
+        PWM_PERIOD_US*0.85, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.15, PWM_PERIOD_US*0.85,
+        PWM_PERIOD_US*0.96, PWM_PERIOD_US*0.04, PWM_PERIOD_US*0.31, PWM_PERIOD_US*0.69,
+};
+//clang-format on
 
 // Timer interrupt stepping for *all* stepper motors.
 static IntervalTimer stepper_update_timer;
@@ -43,21 +69,23 @@ public:
         for (int i = 0; i < n_stepper_motors; i++)
         {
             StepperMotor *stepper = steppers[i];
+            uint32_t pwm_frac = t % PWM_PERIOD_US;
+            digitalWrite(stepper->m_fwd_A, stepper_phase_chart[stepper->m_phase * 4 + 0] < pwm_frac);
+            digitalWrite(stepper->m_rev_A, stepper_phase_chart[stepper->m_phase * 4 + 1] < pwm_frac);
+            digitalWrite(stepper->m_fwd_B, stepper_phase_chart[stepper->m_phase * 4 + 2] < pwm_frac);
+            digitalWrite(stepper->m_rev_B, stepper_phase_chart[stepper->m_phase * 4 + 3] < pwm_frac);
+
             uint32_t dt = t - stepper->m_stepper_update_timer_last_update;
             if (dt > stepper->m_step_period_us)
             {
-                digitalWrite(stepper->m_fwd_A, stepper_phase_chart[stepper->m_phase * 4 + 0]);
-                digitalWrite(stepper->m_rev_A, stepper_phase_chart[stepper->m_phase * 4 + 1]);
-                digitalWrite(stepper->m_fwd_B, stepper_phase_chart[stepper->m_phase * 4 + 2]);
-                digitalWrite(stepper->m_rev_B, stepper_phase_chart[stepper->m_phase * 4 + 3]);
                 if (stepper->m_speed > 0.)
                 {
-                    stepper->m_phase = (stepper->m_phase + 1) % 4;
+                    stepper->m_phase = (stepper->m_phase + 1) % N_PHASES;
                 }
                 else
                 {
                     // Equivalent to stepping backwards
-                    stepper->m_phase = (stepper->m_phase + 3) % 4;
+                    stepper->m_phase = (stepper->m_phase + (N_PHASES - 1)) % N_PHASES;
                 }
                 stepper->m_stepper_update_timer_last_update = t;
             }
@@ -98,7 +126,8 @@ public:
         noInterrupts();
         m_speed = max(min(speed, 1.0), -1.0);
         m_enable = (abs(m_speed) >= 1E-5);
-        m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(m_speed)));
+        // Account for microstepping in speed setting.
+        m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(m_speed))) / (N_PHASES / 4);
         interrupts();
     }
 

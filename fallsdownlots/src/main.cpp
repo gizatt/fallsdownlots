@@ -21,12 +21,12 @@ IMU *imu;
 Display *display;
 
 StepperMotor *motor;
-const uint8_t EN_A = 6;
-const uint8_t FWD_A = 7;
-const uint8_t REV_A = 8;
-const uint8_t EN_B = 9;
-const uint8_t FWD_B = 10;
-const uint8_t REV_B = 11;
+const uint8_t EN_A = 7;
+const uint8_t FWD_A = 6; // PWM
+const uint8_t REV_A = 9; // PWM
+const uint8_t EN_B = 8;
+const uint8_t FWD_B = 10; // PWM
+const uint8_t REV_B = 16; // PWM
 
 const uint8_t POT_PIN = 14;
 
@@ -69,7 +69,7 @@ void loop()
   float avg_speed = 0.;
 
   //
-  float kp = 0.05;
+  float kp = 0.1;
   float kd = 0.001;
   float ki = 0.;
   float kid = 000.; // avg speed of 0.001 -> 1 deg correction.
