@@ -14,7 +14,7 @@ const uint32_t stepper_phase_chart[N_PHASES * 4] = {
 '''
 
 val_string = "PWM_PERIOD_US"
-N_PHASES = 16
+N_PHASES = 32
 
 t = np.linspace(0., 2.*np.pi, N_PHASES, endpoint=False)
 vals = np.vstack([
@@ -27,10 +27,11 @@ for row in vals:
         *row)
 
 out = """
-const uint32_t N_PHASES = {N_PHASES}
+const uint32_t N_PHASES = {N_PHASES};
+// clang-format off
 const uint32_t stepper_phase_chart[N_PHASES * 4] = {{
-    {chart}
-}};
+    {chart}}};
+// clang-format on
 """.format(N_PHASES=N_PHASES, chart=chart)
 
 print(out)
