@@ -63,7 +63,7 @@ public:
         if (m_have_screen && dt >= UPDATE_PERIOD)
         {
             m_display.clearDisplay();
-            m_display.setTextSize(2);              // Normal 1:1 pixel scale
+            m_display.setTextSize(1);              // Normal 1:1 pixel scale
             m_display.setTextColor(SSD1306_WHITE); // Draw white text
             m_display.setCursor(0, 0);             // Start at top-left corner
             m_display.cp437(true);                 // Use full 256 char 'Code Page 437' font

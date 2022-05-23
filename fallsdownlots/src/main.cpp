@@ -47,8 +47,20 @@ uint32_t last_update_t_us = 0;
 uint32_t last_publish_t_us = 0;
 char print_buf[256];
 
-float err_int = 0.;
-float avg_speed = 0.0;
+// State
+float pos_est = 0.;
+float speed_est = 0.;
+float ang_est = 0.;
+float dang_est = 0.;
+float ang_target = 2.5;
+float SPEED_EST_ALPHA = 0.8;
+
+// Feedback gains
+float K_pos = -1.;
+float K_speed = -0.25;
+float K_ang = 0.25;
+float K_dang = 0.003;
+
 void loop()
 {
   auto t = millis();
@@ -61,45 +73,36 @@ void loop()
 
   // Positive angle is corrected by positive speed.
 
-  float angle_target_const = 2; // -5. + 10. * (float)analogRead(POT_PIN) / 1024;
+  ang_est = imu->angle() * 180. / PI;
+  dang_est = imu->dangle() * 180. / PI;
 
-  float angle_deg = imu->angle() * 180. / PI;
-  float dangle_deg = imu->dangle() * 180. / PI;
-  float speed = 0.;
-  float AVG_SPEED_ALPHA = 0.8;
-
-  //
-  float kp = 0.25;
-  float kd = 0.002;
-  float ki = 20.;
-  float kid = 1.; // avg speed of 1 -> 1 deg correction.
-
-  float angle_target = angle_target_const + ki * err_int + kid * avg_speed;
-
-  if (abs(angle_deg - angle_target) <= 30.)
+  float speed_set = 0.;
+  if (abs(ang_est - ang_target) <= 30.)
   {
-    speed = (angle_target - angle_deg) * kp + (0. - dangle_deg) * kd;
+    float pos_err = (0. - pos_est);
+    // clamp pos error contribution to control.
+    pos_err = min(max(pos_err, -1.), 1.);
+    speed_set = (ang_target - ang_est) * K_ang + (0. - K_dang) * K_dang + pos_err * K_pos + (0. - speed_est) * K_speed;
   }
   else
   {
-    speed = 0.;
-    avg_speed = 0.;
-    err_int = 0.;
+    speed_set = 0.;
+    pos_est = 0.;
+    speed_est = 0.;
   }
-  speed = min(max(speed, -1.), 1.);
-  motor->set_speed(speed);
-  avg_speed = avg_speed * AVG_SPEED_ALPHA + (1. - AVG_SPEED_ALPHA) * speed;
+  speed_set = min(max(speed_set, -1.), 1.);
+  motor->set_speed(speed_set);
+  speed_est = speed_est * SPEED_EST_ALPHA + (1. - SPEED_EST_ALPHA) * speed_set;
 
   // Step odometry
   auto t_us = micros();
   uint32_t dt = t_us - last_update_t_us;
   last_update_t_us = t_us;
-  err_int += speed * ((float)dt) / 1E6;
-  err_int = min(max(err_int, -.2), .2);
+  pos_est += speed_est * ((float)dt) / 1E6;
 
   if (t - last_update_t > 100)
   {
-    display->draw_text("A: %.1f\nR: %.4f", angle_deg, avg_speed);
+    display->draw_text("x%7.02f dx%7.02f\na%7.02f da%7.02f", pos_est, speed_est, ang_est, dang_est);
     last_update_t = t;
   }
 
@@ -107,7 +110,7 @@ void loop()
   if (t_us - last_publish_t_us > 1000)
   {
     last_publish_t_us = t_us;
-    snprintf(print_buf, 256, "%0.3f, %0.3f, %0.3f, %0.3f\n", ((float)t_us) / 1E6, angle_deg, dangle_deg, speed);
+    snprintf(print_buf, 256, "%0.3f, %0.3f, %0.3f, %0.3f, %0.3f, %0.3f\n", ((float)t_us) / 1E6, pos_est, speed_est, ang_est, dang_est, speed_set);
     Serial.print(print_buf);
   }
 }
