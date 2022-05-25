@@ -91,12 +91,5 @@ private:
     usb_serial_class *m_serial = nullptr;
     bool m_have_screen;
     uint32_t m_last_update_t;
-    // Buffer in Acc xyz, Gyro xyz, temp order.
-    float m_acc_gyro_temp[7];
-    // Buffers needed to get data out of the IMU library.
-    sensors_event_t m_accel;
-    sensors_event_t m_gyro;
-    sensors_event_t m_temp;
-
     char m_buf[BUF_LEN];
 };
