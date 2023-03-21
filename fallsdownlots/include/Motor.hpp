@@ -77,7 +77,7 @@ const uint32_t stepper_phase_chart[N_PHASES * 4] = {
 // Timer interrupt stepping for *all* stepper motors.
 static IntervalTimer stepper_update_timer;
 static bool stepper_update_timer_started;
-static const uint32_t stepper_update_timer_period_us = 50;
+static const uint32_t stepper_update_timer_period_us = 100;
 static volatile int n_stepper_motors;
 class StepperMotor;
 static StepperMotor *steppers[2];
@@ -171,7 +171,14 @@ public:
         m_speed = max(min(speed, 1.0), -1.0);
         m_enable = (abs(m_speed) >= 1E-5);
         // Account for microstepping in speed setting.
-        m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(m_speed))) / (N_PHASES / 4);
+        if (abs(m_speed) > 1E-5)
+        {
+            m_step_period_us = (uint32_t)max(1., 1E6 / (MAX_SPEED * abs(m_speed))) / (N_PHASES / 4);
+        }
+        else
+        {
+            m_step_period_us = 1E6;
+        }
         interrupts();
     }
 

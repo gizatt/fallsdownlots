@@ -58,7 +58,7 @@ float SPEED_EST_BW = 0.05;
 float SPEED_EST_SLOW_BW = 0.25;
 
 // Feedback gains
-float K_pos = -0.25;
+float K_pos = -0.1;
 float K_speed = -2.;
 float K_ang = 0.2;
 float K_dang = 0.0;
@@ -86,9 +86,12 @@ void loop()
   float speed_set = 0.;
 
   // Decide to turn on if we're in the "good" region for long enough.
-  if (!active && abs(ang_est - ang_target) <= 5. && t - active_start_timer > 1.0)
+  if (!active && abs(ang_est - ang_target) <= 5.)
   {
-    active = true;
+    if (t - active_start_timer > 1000)
+    {
+      active = true;
+    }
   }
   else
   {
@@ -135,10 +138,12 @@ void loop()
   }
 
   // Publish
+  /*
   if (t_us - last_publish_t_us > 1000)
   {
     last_publish_t_us = t_us;
     snprintf(print_buf, 256, "%0.3f, %0.3f, %0.3f, %0.3f, %0.3f, %0.3f", ((float)t_us) / 1E6, pos_est, speed_est_slow, ang_est, dang_est, speed_set);
     Serial.print(print_buf);
   }
+  */
 }
