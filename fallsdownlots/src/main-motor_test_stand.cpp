@@ -12,15 +12,16 @@
  */
 #include <SimpleFOC.h>
 
-#define V1_PIN 9
+#define V1_PIN A1
 
 char print_buf[256];
 
 // BLDC motor & driver instance
 BLDCMotor motor = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 // BLDCMotor motor = BLDCMotor(7, 1.0, 350); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
-BLDCDriver3PWM driver = BLDCDriver3PWM(8, 9, 10, 11);
-MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
+BLDCDriver3PWM driver = BLDCDriver3PWM(5, 6, 9, 10);
+ MagneticSensorI2C sensor = MagneticSensorI2C(AS5600_I2C);
+//MagneticSensorAnalog sensor = MagneticSensorAnalog(A1, 5, 3800);
 // Stepper motor & driver instance
 // StepperMotor motor = StepperMotor(50);
 // StepperDriver4PWM driver = StepperDriver4PWM(9, 5, 10, 6,  8);
@@ -87,7 +88,7 @@ void doPID_Tf(char *cmd)
 void doLimit(char *cmd) { command.scalar(&motor.voltage_limit, cmd); }
 
 // 3.3V -> Motor Thermistor -> 1K resistor -> GND
-#define MOTOR_THERMISTOR_PIN 10
+#define MOTOR_THERMISTOR_PIN A5
 // LUT starts at 0 and each entry is 5*C hotter.
 const float thermistor_lut_temp_spacing = 5.;
 const float thermistor_lut_resistances[] = {32.96, 25.58, 20.00, 15.76, 12.51, 10.0, 8.048, 6.518, 5.312, 4.354, 3.588, 2.974, 2.476, 2.072, 1.743, 1.437, 1.250, 1.065, 0.9110, 0.7824, 0.6744, 0.5836, 0.5066};
@@ -132,15 +133,13 @@ float get_motor_temperature()
 
 void setup()
 {
-  analogReadResolution(10);
-
-  Wire.setClock(400000);
-  sensor.init(&Wire);
+  analogReadResolution(12);
+  sensor.init();
 
   // driver config
   // power supply voltage [V]
   driver.voltage_power_supply = 12.;
-  driver.pwm_frequency = 128000;
+  // driver.pwm_frequency = 128000;
   driver.init();
   // link driver
   motor.linkDriver(&driver);
@@ -151,9 +150,9 @@ void setup()
   //  open loop control config
   // motor.controller = MotionControlType::velocity_openloop;
   motor.torque_controller = TorqueControlType::voltage;
-  motor.controller = MotionControlType::velocity;
+  // motor.controller = MotionControlType::velocity;
   motor.PID_velocity.output_ramp = 1000;
-  // motor.controller = MotionControlType::torque;
+  motor.controller = MotionControlType::torque;
 
   // choose FOC modulation (optional) - SinePWM or SpaceVectorPWM
   // motor.foc_modulation = FOCModulationType::SinePWM;
