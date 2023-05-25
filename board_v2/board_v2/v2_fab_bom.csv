@@ -1,0 +1,20 @@
+"Id";"Designator";"Footprint";"Quantity";"Designation";"Supplier and ref";
+1;"C5,C11";"C_0805_2012Metric_Pad1.18x1.45mm_HandSolder";2;".47uF";;;   check
+2;"C12,C6";"CP_Radial_D5.0mm_P2.50mm";2;"10uF";;;  check
+3;"C9,C2,C3,C10,C8,C13,C4";"C_0805_2012Metric_Pad1.18x1.45mm_HandSolder";7;".1uF";;; check
+4;"J2";"JST MX x6";1;"MOTR_SENS";;; check
+5;"R1,R2";"R_0805_2012Metric_Pad1.20x1.40mm_HandSolder";2;"R1K";;; check
+6;"U2";"MPU6050_Breakout_8pin_2.54mm";1;"MPU-6050-Breakout";;; check
+7;"J1";"PinHeader_1x02_P2.54mm_Horizontal";1;"Battery";;; check
+8;"J4";"PinHeader_1x03_P2.54mm_Horizontal";1;"MOTL";;; check
+9;"J3";"JST MX x6";1;"MOTL_SENS";;; check
+10;"U5,U3";"IC_TPS61196PWPRQ1";2;"DRV8313PWP";;; check
+11;"C7,C1";"C_0805_2012Metric_Pad1.18x1.45mm_HandSolder";2;".01uF";;; check
+12;"R3";"R_0805_2012Metric_Pad1.20x1.40mm_HandSolder";1;"1M";;;check
+13;"J6";"PinHeader_1x03_P2.54mm_Horizontal";1;"MOTR";;; check
+14;"SW1";"SW_L102021ML04Q";1;"SW_SPDT";;; check
+15;"D1";"D_SOD-128";1;"DSchottky";;; check
+16;"R4";"R_0805_2012Metric_Pad1.20x1.40mm_HandSolder";1;"500K";;; 470K instead, check
+17;"R5,R6";"R_0805_2012Metric_Pad1.20x1.40mm_HandSolder";2;"R10K";;; check
+18;"A1";"Adafruit_Feather_M0_Wifi_WithMountingHoles";1;"Adafruit_Feather_M0_Express";;; check
+19;"U1";"TO-220-3_Horizontal_TabDown";1;"LD33V";;; check
