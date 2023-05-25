@@ -1,13 +1,16 @@
 /**
  * A robot that falls down lots.
  */
+#include "SPI.h"
 #include <SimpleFOC.h>
+#include "IMU.hpp"
+#include "BLEManager.hpp"
 
 MagneticSensorI2C as5600_r = MagneticSensorI2C(AS5600_I2C);
 TwoWire &Wire_r = Wire;
 BLDCMotor motor_r = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_r = BLDCDriver3PWM(6, 9, 10, 5);
-const int MOTOR_R_THERMISTOR_PIN = A2;
+const int MOTOR_R_THERMISTOR_PIN = A4;
 const float MOTOR_R_THERMISTOR_R_DIVIDER = 1000; // ohms
 
 MagneticSensorI2C as5600_l = MagneticSensorI2C(AS5600_I2C);
@@ -24,10 +27,7 @@ const float thermistor_lut_temp_spacing = 5.;
 const float thermistor_lut_resistances[] = {32.96, 25.58, 20.00, 15.76, 12.51, 10.0, 8.048, 6.518, 5.312, 4.354, 3.588, 2.974, 2.476, 2.072, 1.743, 1.437, 1.250, 1.065, 0.9110, 0.7824, 0.6744, 0.5836, 0.5066};
 const int thermistor_lut_entries = 23;
 
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-Adafruit_MPU6050 mpu;
-
+IMU mpu(Wire_l, &Serial);
 // TODO: low-pass this value, it's pretty noisy as-is.
 float get_motor_temperature(int thermistor_pin, float divider_r)
 {
@@ -82,17 +82,22 @@ void setup()
   Serial.begin(115200);
 
 
-  Wire_l.setClock(400000);
-  Wire_r.setClock(400000);
+  Wire_l.setClock(800000);
+  Wire_r.setClock(800000);
   Wire_l.begin();
   Wire_r.begin();
 
   // Talk to IMU
-  while (!mpu.begin(0x68, &Wire_l)){
+  while (!mpu.try_connect()){
     Serial.println("Failed to find MPU6050 chip");
     delay(500);
   }
   Serial.println("MPU6050 Found!");
+
+  while (!begin_ble("fallsdownlots")){
+    Serial.println("Failed to set up BLE.");
+    delay(1000);
+  }
 
   // Initialize magnetic encoders.
   as5600_r.init(&Wire_r);
@@ -167,21 +172,35 @@ void setup()
 float low_pass_x_acc = 0.;
 
 long unsigned int last_printed_t = 0;
+long unsigned int last_command_t = 0;
 void loop()
 {
-  // IMPORTANT - call as frequently as possible
-  // update the sensor values
-  as5600_r.update();
-  as5600_l.update();
-  motor_l.loopFOC();
-  motor_r.loopFOC();
+  // Loop management to prioritize good state estimation (targeting 1khz)
+  // then good 
+  mpu.update();
 
   long unsigned int t = millis();
-  float target_torque = sin((2. * PI / 5.) * ((float)t) / 1E3) * 0.1;
-  motor_l.move(target_torque);
-  motor_r.move(target_torque);
+  if (t - last_command_t > 3){
+    as5600_r.update();
+    as5600_l.update();
+    motor_l.loopFOC();
+    motor_r.loopFOC();
 
-  if (t - last_printed_t > 10)
+    //float target_torque = sin((2. * PI / 5.) * ((float)t) / 1E3) * 0.1;
+    const float KP = 1.0;
+    const float KD = 0.01;
+    const float BASIN_OF_ATTRACTION = 0.5;
+    float target_torque;
+    if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION){
+      target_torque =  KP * mpu.angle() - KD * mpu.dangle();
+    }
+
+    motor_l.move(target_torque);
+    motor_r.move(target_torque);
+    last_command_t = t;
+  }
+
+  if (t - last_printed_t > 100)
   {
     // display the angle and the angular velocity to the terminal
     float l_angle = as5600_l.getAngle();
@@ -189,13 +208,10 @@ void loop()
     float r_angle = as5600_r.getAngle();
     float r_temp = get_motor_temperature(MOTOR_R_THERMISTOR_PIN, MOTOR_R_THERMISTOR_R_DIVIDER);
 
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
 
-    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1f]\n", l_angle, l_temp, r_angle, r_temp, a.acceleration.x, a.acceleration.y, a.acceleration.z);
+    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, mpu.angle(), mpu.dangle(), 1000.*mpu.avg_update_dt());
     last_printed_t = t;
 
-    low_pass_x_acc = low_pass_x_acc * 0.995 + 0.005 * a.acceleration.x;
     //motor_l.move(max(-1., min(1., -low_pass_x_acc * 10.)));
     //motor_r.move(max(-1., min(1., -low_pass_x_acc * 10.)));
   }

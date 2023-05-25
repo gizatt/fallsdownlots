@@ -21,17 +21,14 @@ public:
     const float RECONNECT_PERIOD = 1.0; // Seconds
     const float COMPLEMENTARY_FILTER_ALPHA = 0.995;
     const float DANGLE_LOW_PASS_ALPHA = 0.5;
-    const uint8_t INTERRUPT_PIN = 15;
+    const uint8_t INTERRUPT_PIN = 2;
     // Keyed by MPU6050_GYRO_FS_*
     const float GYRO_SCALING[4] = {
         1. / 131., 1 / 65.5, 1 / 32.8, 1 / 16.4};
 
     // This class maybe shouldn't exist, as it's inevitably a singleton?
-    IMU(usb_serial_class *serial = nullptr) : m_mpu(0x68), m_serial(serial), m_have_imu(false), m_dmp_ready(false), m_packet_size(-1), m_last_update_t(micros()), m_avg_update_dt(0.)
+    IMU(TwoWire& wire, Adafruit_USBD_CDC *serial = nullptr) : m_mpu(0x68, &wire), m_serial(serial), m_have_imu(false), m_dmp_ready(false), m_packet_size(-1), m_last_update_t(micros()), m_avg_update_dt(0.)
     {
-        Wire.begin();
-        Wire.setClock(400000);
-        try_connect();
     }
 
     bool connected()
@@ -82,14 +79,17 @@ public:
         return m_have_imu;
     }
 
-    void update(uint32_t t)
+    void update()
     {
         // uint32_t dt = t - m_last_update_t;
         //  Handle our own timekeeping. TODO: Update whole system to float seconds since
         //  startup using micros() or something...
-        t = micros();
+        auto t = micros();
         uint32_t dt_uint32 = t - m_last_update_t;
         float dt = ((float)dt_uint32) / 1E6; // Convert to seconds.
+
+        // hack around nonexistence of interrupt
+        m_mpu_interrupt = true;
 
         if (m_dmp_ready && m_mpu_interrupt && dt >= UPDATE_PERIOD)
         {
@@ -167,7 +167,7 @@ public:
 
 private:
     MPU6050 m_mpu;
-    usb_serial_class *m_serial = nullptr;
+    Adafruit_USBD_CDC *m_serial = nullptr;
     bool m_have_imu;
 
     // DMP details.
