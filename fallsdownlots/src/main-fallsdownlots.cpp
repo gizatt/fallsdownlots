@@ -28,13 +28,23 @@ IMU mpu(Wire_l, &Serial);
 ThermistorManager thermistor_l(MOTOR_L_THERMISTOR_READ_PIN, MOTOR_L_THERMISTOR_WRITE_PIN, MOTOR_L_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 ThermistorManager thermistor_r(MOTOR_R_THERMISTOR_READ_PIN, MOTOR_R_THERMISTOR_WRITE_PIN, MOTOR_R_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 
+// Control params. Override by passing float buffer in this order.
+struct ControlParams {
+  float KP = 1.0;
+  float KD = -0.05;
+} control_params;
+
+
+// Non-overrideable float params.
+const float BASIN_OF_ATTRACTION = 0.5;
+
 void onBLEPacketReceived(const uint8_t *buffer, size_t size)
 {
   Serial.println("Got packet");
-  if (size > 0)
-  {
-    maybe_send_ble_uart(buffer, size);
-  }
+  if (size == sizeof(ControlParams)){
+    memcpy(&control_params, (const ControlParams*) buffer, sizeof(ControlParams));
+  } 
+  maybe_send_ble_uart((const uint8_t *)&control_params, sizeof(ControlParams));
 }
 
 void setup()
@@ -136,13 +146,10 @@ void setup()
 
 void do_control()
 {
-  const float KP = 1.0;
-  const float KD = 0.01;
-  const float BASIN_OF_ATTRACTION = 0.5;
   float target_torque = 0.0;
   if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION)
   {
-    target_torque = KP * mpu.angle() - KD * mpu.dangle();
+    target_torque = control_params.KP * mpu.angle() - control_params.KD * mpu.dangle();
   }
 
   motor_l.move(target_torque);
@@ -164,7 +171,7 @@ void loop()
   // We're very limited by I2C comm rate, which is set to its max (400khz).
   mpu.update();
 
-  if (t - last_command_t > 10)
+  if (t - last_command_t > 1)
   {
     last_command_t = t;
     // TODO(gizatt) I'm pretty sure the source of slowness here is I2C comms
@@ -176,6 +183,7 @@ void loop()
     as5600_l.update();
     motor_l.loopFOC();
     motor_r.loopFOC();
+    do_control();
   }
 
   if (t - last_thermistor_read_t > 50)
@@ -204,13 +212,10 @@ void loop()
     Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt());
 
     // Send current state as a simple float buffer
-    ble_send_buffer[0] = l_angle;
-    ble_send_buffer[1] = l_temp;
+    ble_send_buffer[0] = mpu.angle();
+    ble_send_buffer[1] = 1000. * mpu.avg_update_dt();
     ble_send_buffer[2] = r_angle;
-    ble_send_buffer[3] = r_temp;
-    ble_send_buffer[4] = mpu.angle();
-    ble_send_buffer[5] = mpu.dangle();
-    ble_send_buffer[6] = 1000. * mpu.avg_update_dt();
+    ble_send_buffer[3] = max(l_temp, r_temp);
     maybe_send_ble_uart((uint8_t *)ble_send_buffer, sizeof(float) * 4);
   }
 }

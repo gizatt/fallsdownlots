@@ -1,10 +1,8 @@
 """
-UART Service
--------------
-An example showing how to write a simple program using the Nordic Semiconductor
-(nRF) UART service.
+Adapted from the BLEAK UART service example.
 """
 
+import traceback
 import struct
 import asyncio
 import sys
@@ -75,6 +73,21 @@ async def uart_terminal():
             else:
                 recv_buf.append(b)
 
+    def handle_input(input_data: str) -> bytearray:
+        input_data = input_data.decode().strip(' \r\n')
+        print(input_data, type(input_data))
+        try:
+            floats = [float(x) for x in input_data.split(" ")]
+        except ValueError:
+            print("Bad input -- only input space-separated floats.")
+            return None
+
+        # Encode to a COBS buffer
+        data = struct.pack("f"*len(floats), *floats)
+        encoded_data = bytearray(cobs.encode(data))
+        encoded_data.append(0)
+        return encoded_data
+
     async with BleakClient(device, disconnected_callback=handle_disconnect) as client:
         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
 
@@ -88,16 +101,24 @@ async def uart_terminal():
             # This waits until you type a line and press ENTER.
             # A real terminal program might put stdin in raw mode so that things
             # like CTRL+C get passed to the remote device.
-            data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
+            input_data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
 
             # data will be empty on EOF (e.g. CTRL+D on *nix)
-            if not data:
+            if not input_data:
                 break
 
-            # Encode to a COBS buffer.
-            encoded_data = bytearray(cobs.encode(data))
-            encoded_data.append(0)
+            try:
+                encoded_data = await loop.run_in_executor(None, handle_input, input_data)
+            except Exception as e:
+                traceback.print_exc()
+                continue
+        
+            if not encoded_data:
+                continue
 
+            # Try to parse it into an array of floats. If it matches our
+            # expectation, send that down.
+                
             # some devices, like devices running MicroPython, expect Windows
             # line endings (uncomment line below if needed)
             # data = data.replace(b"\n", b"\r\n")
@@ -109,10 +130,9 @@ async def uart_terminal():
             print("sending:", encoded_data)
             for s in sliced(encoded_data, rx_char.max_write_without_response_size):
                 await client.write_gatt_char(rx_char, s)
-            print("Sent")
 
-
-
+            
+            
 if __name__ == "__main__":
     try:
         asyncio.run(uart_terminal())
