@@ -24,13 +24,18 @@ const int MOTOR_L_THERMISTOR_READ_PIN = A2;
 const int MOTOR_L_THERMISTOR_WRITE_PIN = A1;
 const float MOTOR_L_THERMISTOR_R_DIVIDER = 1000; // ohms
 
-
 IMU mpu(Wire_l, &Serial);
 ThermistorManager thermistor_l(MOTOR_L_THERMISTOR_READ_PIN, MOTOR_L_THERMISTOR_WRITE_PIN, MOTOR_L_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 ThermistorManager thermistor_r(MOTOR_R_THERMISTOR_READ_PIN, MOTOR_R_THERMISTOR_WRITE_PIN, MOTOR_R_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 
-
-
+void onBLEPacketReceived(const uint8_t *buffer, size_t size)
+{
+  Serial.println("Got packet");
+  if (size > 0)
+  {
+    maybe_send_ble_uart(buffer, size);
+  }
+}
 
 void setup()
 {
@@ -39,23 +44,25 @@ void setup()
   // monitoring port
   Serial.begin(115200);
 
-
   Wire_l.setClock(TWIM_FREQUENCY_FREQUENCY_K400);
   Wire_r.setClock(TWIM_FREQUENCY_FREQUENCY_K400);
   Wire_l.begin();
   Wire_r.begin();
 
   // Talk to IMU
-  while (!mpu.try_connect()){
+  while (!mpu.try_connect())
+  {
     Serial.println("Failed to find MPU6050 chip");
     delay(500);
   }
   Serial.println("MPU6050 Found!");
 
-  while (!begin_ble("fallsdownlots")){
+  while (!begin_ble("fallsdownlots"))
+  {
     Serial.println("Failed to set up BLE.");
     delay(1000);
   }
+  blueart_packet_serial.setPacketHandler(&onBLEPacketReceived);
 
   // Initialize magnetic encoders.
   as5600_r.init(&Wire_r);
@@ -127,11 +134,28 @@ void setup()
   Serial.println("Motor L ready");
 }
 
+void do_control()
+{
+  const float KP = 1.0;
+  const float KD = 0.01;
+  const float BASIN_OF_ATTRACTION = 0.5;
+  float target_torque = 0.0;
+  if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION)
+  {
+    target_torque = KP * mpu.angle() - KD * mpu.dangle();
+  }
+
+  motor_l.move(target_torque);
+  motor_r.move(target_torque);
+}
+
 float low_pass_x_acc = 0.;
 
 long unsigned int last_printed_t = 0;
 long unsigned int last_command_t = 0;
 long unsigned int last_thermistor_read_t = 0;
+long unsigned int last_ble_uart_update = 0;
+float ble_send_buffer[7];
 void loop()
 {
   long unsigned int t = millis();
@@ -140,7 +164,9 @@ void loop()
   // We're very limited by I2C comm rate, which is set to its max (400khz).
   mpu.update();
 
-  if (t - last_command_t > 10){
+  if (t - last_command_t > 10)
+  {
+    last_command_t = t;
     // TODO(gizatt) I'm pretty sure the source of slowness here is I2C comms
     // with both magnetic sensors. I suspect it'd be pretty straightforward
     // to make a new MagneticSensorI2C class that reads the sensor at a slow
@@ -150,39 +176,41 @@ void loop()
     as5600_l.update();
     motor_l.loopFOC();
     motor_r.loopFOC();
-
-    //float target_torque = sin((2. * PI / 5.) * ((float)t) / 1E3) * 0.1;
-    const float KP = 1.0;
-    const float KD = 0.01;
-    const float BASIN_OF_ATTRACTION = 0.5;
-    float target_torque = 0.0;
-    if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION){
-      target_torque =  KP * mpu.angle() - KD * mpu.dangle();
-    }
-
-    motor_l.move(target_torque);
-    motor_r.move(target_torque);
-    last_command_t = t;
   }
-
 
   if (t - last_thermistor_read_t > 50)
   {
+    last_thermistor_read_t = t;
     // Don't need tons of accuracy out of these, so don't update super frequently.
     thermistor_l.update();
     thermistor_r.update();
   }
 
-  if (t - last_printed_t > 100)
+  if (t - last_ble_uart_update > 10)
   {
+    last_ble_uart_update = t;
+    update_ble_uart();
+  }
+
+  if (t - last_printed_t > 250)
+  {
+    last_printed_t = t;
     // display the angle and the angular velocity to the terminal
     float l_angle = as5600_l.getAngle();
     float l_temp = thermistor_l.get_temperature();
     float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
+    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt());
 
-    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, mpu.angle(), mpu.dangle(), 1000.*mpu.avg_update_dt());
-    last_printed_t = t;
+    // Send current state as a simple float buffer
+    ble_send_buffer[0] = l_angle;
+    ble_send_buffer[1] = l_temp;
+    ble_send_buffer[2] = r_angle;
+    ble_send_buffer[3] = r_temp;
+    ble_send_buffer[4] = mpu.angle();
+    ble_send_buffer[5] = mpu.dangle();
+    ble_send_buffer[6] = 1000. * mpu.avg_update_dt();
+    maybe_send_ble_uart((uint8_t *)ble_send_buffer, sizeof(float) * 4);
   }
 }

@@ -2,12 +2,14 @@
 
 #include <string>
 #include "bluefruit.h"
+#include <PacketSerial.h>
 
 // BLE Service
 BLEDfu  bledfu;  // OTA DFU service
 BLEDis  bledis;  // device information
 BLEUart bleuart; // uart over ble
 
+PacketSerial_<COBS> blueart_packet_serial;
 
 void startAdv(void)
 {
@@ -48,6 +50,14 @@ void connect_callback(uint16_t conn_handle)
 
   Serial.print("Connected to ");
   Serial.println(central_name);
+
+  //connection->requestPHY();
+  //connection->requestMtuExchange(247);
+  //connection->requestDataLengthUpdate();
+    
+  
+  // TODO(gizatt) See https://github.com/adafruit/Adafruit_nRF52_Arduino/blob/master/libraries/Bluefruit52Lib/examples/Peripheral/throughput/throughput.ino
+  // for some potential connection configuration options for possible speed-up.
 }
 
 /**
@@ -69,6 +79,8 @@ bool begin_ble(const std::string& name){
     Bluefruit.setTxPower(4);    // Check bluefruit.h for supported values
     Bluefruit.Periph.setConnectCallback(connect_callback);
     Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
+    //Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
+    //Bluefruit.configCentralBandwidth(BANDWIDTH_HIGH);
 
     // To be consistent OTA DFU should be added first if it exists
     bledfu.begin();
@@ -79,11 +91,39 @@ bool begin_ble(const std::string& name){
     bledis.begin();
 
     // Configure and Start BLE Uart Service
+    bleuart.bufferTXD(true);
     bleuart.begin();
-
     // Set up and start advertising
     startAdv();
 
     Serial.println("BLE setup done.");
+
+    // Set up PacketSerial uart wrapper.
+    blueart_packet_serial.setStream(&bleuart);
+
     return true;
+}
+
+
+// Updates the PacketSerial object only when we
+// have an active connection. This will dispatch any callbacks
+// you have registered to `blueart_package_serial` if packets
+// are received.
+void update_ble_uart(){
+  // Echo received data
+  if (Bluefruit.connected() && bleuart.notifyEnabled())
+  {
+    blueart_packet_serial.update();
+  }
+}
+
+// Returns true if data was sent.
+bool maybe_send_ble_uart(const uint8_t * buf, int len){
+  if (Bluefruit.connected() && bleuart.notifyEnabled()){
+    blueart_packet_serial.send(buf, len);
+    bleuart.flushTXD();
+    return true;
+  } else {
+    return false;
+  }
 }
