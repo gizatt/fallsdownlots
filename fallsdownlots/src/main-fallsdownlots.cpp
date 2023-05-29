@@ -30,10 +30,14 @@ ThermistorManager thermistor_r(MOTOR_R_THERMISTOR_READ_PIN, MOTOR_R_THERMISTOR_W
 
 // Control params. Override by passing float buffer in this order.
 struct ControlParams {
-  float KP = 1.0;
-  float KD = -0.05;
+  float ANGLE_P = 1.0;
+  float ANGLE_D = 0.05;
+  float ODOM_P = 0.01;
+  float ODOM_D = 0.02;
 } control_params;
 
+// State.
+float integrated_odometry = 0.0;
 
 // Non-overrideable float params.
 const float BASIN_OF_ATTRACTION = 0.5;
@@ -144,12 +148,23 @@ void setup()
   Serial.println("Motor L ready");
 }
 
+uint32_t last_control_update_t = 0;
 void do_control()
 {
+  uint32_t t = micros();
+  float dt = ((float)(t - last_control_update_t)) / 1E6;
+  last_control_update_t = t;
+
+  float average_velocity = 0.5 * motor_l.shaftVelocity() + 0.5 * motor_r.shaftVelocity();
+  Serial.printf("Average velocity %0.4f, dt %0.4f", average_velocity, dt);
+  integrated_odometry += dt * average_velocity;
+
   float target_torque = 0.0;
   if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION)
   {
-    target_torque = control_params.KP * mpu.angle() - control_params.KD * mpu.dangle();
+    target_torque = control_params.ANGLE_P * mpu.angle() + control_params.ANGLE_D * mpu.dangle() + integrated_odometry * control_params.ODOM_P + average_velocity * control_params.ODOM_D;
+  } else {
+    integrated_odometry = 0.0;
   }
 
   motor_l.move(target_torque);
@@ -209,12 +224,12 @@ void loop()
     float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
-    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt());
+    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt());
 
     // Send current state as a simple float buffer
     ble_send_buffer[0] = mpu.angle();
-    ble_send_buffer[1] = 1000. * mpu.avg_update_dt();
-    ble_send_buffer[2] = r_angle;
+    ble_send_buffer[1] = integrated_odometry;
+    ble_send_buffer[2] = 1000. * mpu.avg_update_dt();
     ble_send_buffer[3] = max(l_temp, r_temp);
     maybe_send_ble_uart((uint8_t *)ble_send_buffer, sizeof(float) * 4);
   }
