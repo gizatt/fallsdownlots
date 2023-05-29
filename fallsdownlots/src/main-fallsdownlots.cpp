@@ -5,74 +5,32 @@
 #include <SimpleFOC.h>
 #include "IMU.hpp"
 #include "BLEManager.hpp"
+#include "ThermistorManager.hpp"
 
 MagneticSensorI2C as5600_r = MagneticSensorI2C(AS5600_I2C);
 TwoWire &Wire_r = Wire;
 BLDCMotor motor_r = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_r = BLDCDriver3PWM(6, 9, 10, 5);
-const int MOTOR_R_THERMISTOR_PIN = A4;
+const int MOTOR_R_THERMISTOR_READ_PIN = A3;
+const int MOTOR_R_THERMISTOR_WRITE_PIN = A4;
 const float MOTOR_R_THERMISTOR_R_DIVIDER = 1000; // ohms
+const float MOTOR_THERMISTOR_LOWPASS_RC = 0.5;
 
 MagneticSensorI2C as5600_l = MagneticSensorI2C(AS5600_I2C);
 TwoWire Wire_l(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, 24, 25);
 BLDCMotor motor_l = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_l = BLDCDriver3PWM(12, 13, 26, 11);
-const int MOTOR_L_THERMISTOR_PIN = A1;
-const float MOTOR_L_THERMISTOR_R_DIVIDER = 914; // ohms
+const int MOTOR_L_THERMISTOR_READ_PIN = A2;
+const int MOTOR_L_THERMISTOR_WRITE_PIN = A1;
+const float MOTOR_L_THERMISTOR_R_DIVIDER = 1000; // ohms
 
-// THERMISTOR STUFF
-// 3.3V -> [parallel 1.6kohm leakage from somewhere reg with Motor Thermistor] -> [VSENSE] -> [divider_R~1k] resistor -> GND
-// LUT starts at 0 and each entry is 5*C hotter.
-const float thermistor_lut_temp_spacing = 5.;
-const float thermistor_lut_resistances[] = {32.96, 25.58, 20.00, 15.76, 12.51, 10.0, 8.048, 6.518, 5.312, 4.354, 3.588, 2.974, 2.476, 2.072, 1.743, 1.437, 1.250, 1.065, 0.9110, 0.7824, 0.6744, 0.5836, 0.5066};
-const int thermistor_lut_entries = 23;
 
 IMU mpu(Wire_l, &Serial);
-// TODO: low-pass this value, it's pretty noisy as-is.
-float get_motor_temperature(int thermistor_pin, float divider_r)
-{
-  float v_sense = min(3.3 - 1E-3, 3.3 * float(analogRead(thermistor_pin)) / 1023.);
-  // v_sense = 3.3 * R_div / (R_div + R_therm)
-  // v_sense * (R_div + R_therm) = 3.3 * R_div
-  // v_Sense * R_div + v_sense * R_therm = 3.3 * R_div
-  // R_therm = R_div * (3.3 - v_sense) / v_sense
-  // final units in kohm
-  float thermistor_and_regulator_resistance = (divider_r * (3.3 - v_sense) / v_sense) / 1000.;
-  float R_leak = 1.6; // not sure where this leak is coming from. leakage of regulator, maybe?
-  // rtot = 1 / (1/R_div + 1/R_leak))
-  // rtot / rdiv + rtot / rleak = 1
-  // rtot / rdiv = 1. - rtot / rleak
-  // rdiv = rtot / (1. - rtot / rleak)
-  // math error somewhere, need a sign flip... ugh
-  float thermistor_resistance = -thermistor_and_regulator_resistance / (1. - thermistor_and_regulator_resistance / R_leak);
+ThermistorManager thermistor_l(MOTOR_L_THERMISTOR_READ_PIN, MOTOR_L_THERMISTOR_WRITE_PIN, MOTOR_L_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
+ThermistorManager thermistor_r(MOTOR_R_THERMISTOR_READ_PIN, MOTOR_R_THERMISTOR_WRITE_PIN, MOTOR_R_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 
-  // See where we fall in the lut.
-  float temperature = 1234.0; // obviously uninitialized value
-  if (thermistor_resistance > thermistor_lut_resistances[0])
-  {
-    temperature = 0.0;
-  }
-  else if (thermistor_resistance <= thermistor_lut_resistances[thermistor_lut_entries - 1])
-  {
-    temperature = 110.0;
-  }
-  else
-  {
-    for (int i = 0; i < thermistor_lut_entries - 1; i++)
-    {
-      float r_lower = thermistor_lut_resistances[i + 1];
-      float r_upper = thermistor_lut_resistances[i];
-      if (thermistor_resistance >= r_lower && thermistor_resistance < r_upper)
-      {
-        // Ratio -> 0 when resistance = r_lower, -> 1 when = r_upper.
-        float ratio = (thermistor_resistance - r_lower) / (r_upper - r_lower);
-        temperature = ratio * (i * 5.) + (1. - ratio) * (i + 1) * 5.;
-        break;
-      }
-    }
-  }
-  return temperature;
-}
+
+
 
 void setup()
 {
@@ -82,8 +40,8 @@ void setup()
   Serial.begin(115200);
 
 
-  Wire_l.setClock(800000);
-  Wire_r.setClock(800000);
+  Wire_l.setClock(TWIM_FREQUENCY_FREQUENCY_K400);
+  Wire_r.setClock(TWIM_FREQUENCY_FREQUENCY_K400);
   Wire_l.begin();
   Wire_r.begin();
 
@@ -173,14 +131,21 @@ float low_pass_x_acc = 0.;
 
 long unsigned int last_printed_t = 0;
 long unsigned int last_command_t = 0;
+long unsigned int last_thermistor_read_t = 0;
 void loop()
 {
+  long unsigned int t = millis();
+
   // Loop management to prioritize good state estimation (targeting 1khz)
-  // then good 
+  // We're very limited by I2C comm rate, which is set to its max (400khz).
   mpu.update();
 
-  long unsigned int t = millis();
-  if (t - last_command_t > 3){
+  if (t - last_command_t > 10){
+    // TODO(gizatt) I'm pretty sure the source of slowness here is I2C comms
+    // with both magnetic sensors. I suspect it'd be pretty straightforward
+    // to make a new MagneticSensorI2C class that reads the sensor at a slow
+    // rate (like 30hz), estimates velocity from the signals, and returns
+    // projected rotation estimates at higher rates.
     as5600_r.update();
     as5600_l.update();
     motor_l.loopFOC();
@@ -190,7 +155,7 @@ void loop()
     const float KP = 1.0;
     const float KD = 0.01;
     const float BASIN_OF_ATTRACTION = 0.5;
-    float target_torque;
+    float target_torque = 0.0;
     if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION){
       target_torque =  KP * mpu.angle() - KD * mpu.dangle();
     }
@@ -200,19 +165,24 @@ void loop()
     last_command_t = t;
   }
 
+
+  if (t - last_thermistor_read_t > 50)
+  {
+    // Don't need tons of accuracy out of these, so don't update super frequently.
+    thermistor_l.update();
+    thermistor_r.update();
+  }
+
   if (t - last_printed_t > 100)
   {
     // display the angle and the angular velocity to the terminal
     float l_angle = as5600_l.getAngle();
-    float l_temp = get_motor_temperature(MOTOR_L_THERMISTOR_PIN, MOTOR_L_THERMISTOR_R_DIVIDER);
+    float l_temp = thermistor_l.get_temperature();
     float r_angle = as5600_r.getAngle();
-    float r_temp = get_motor_temperature(MOTOR_R_THERMISTOR_PIN, MOTOR_R_THERMISTOR_R_DIVIDER);
+    float r_temp = thermistor_r.get_temperature();
 
 
     Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, mpu.angle(), mpu.dangle(), 1000.*mpu.avg_update_dt());
     last_printed_t = t;
-
-    //motor_l.move(max(-1., min(1., -low_pass_x_acc * 10.)));
-    //motor_r.move(max(-1., min(1., -low_pass_x_acc * 10.)));
   }
 }
