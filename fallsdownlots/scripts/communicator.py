@@ -30,6 +30,14 @@ def sliced(data: bytes, n: int) -> Iterator[bytes]:
 
 recv_buf = bytearray()
 
+def handle_control_param_update(name, value):
+    if name not in ["ANG_P", "ANG_D", "ODO_P", "ODO_D"]:
+        raise ValueError(name)
+    print(f"Got control param update: {name}, {value}")
+
+def handle_state_update(values):
+    pass
+
 async def uart_terminal():
     """This is a simple "terminal" program that uses the Nordic Semiconductor
     (nRF) UART service. It reads from stdin and sends each line of data to the
@@ -65,25 +73,62 @@ async def uart_terminal():
                     decoded_data = cobs.decode(recv_buf)
                 except cobs.DecodeError as e:
                     print("Could not decode: ", e)
+
                 recv_buf.clear()
                 if decoded_data:
-                    print(len(decoded_data))
-                    vals = [struct.unpack('f', x)[0] for x in sliced(decoded_data, 4) if len(x) == 4]
-                    print([f"{x:.2f}" for x in vals])
+                    # Possibility 1: It's a string name followed directly by a float.
+                    handled = False
+
+                    if len(decoded_data) < 20:
+                        print(decoded_data)
+
+                    try:
+                        values = struct.unpack("ffffffff", decoded_data)
+                        handle_state_update(values)
+                        return
+                    except struct.error:
+                        pass
+
+                    #try: 
+                    if len(decoded_data) >= 5 and len(decoded_data) <= 30:
+                        num_string_bytes = len(decoded_data) - 5
+                        name = decoded_data[:num_string_bytes].decode('ascii')
+                        if decoded_data[num_string_bytes] != 0:
+                            raise ValueError()
+                        value = struct.unpack(f"f", decoded_data[-4:])[0]
+                        handle_control_param_update(name, value)
+                        return
+#                    except struct.error:
+#                        pass
+#                    except UnicodeDecodeError:
+#                        pass
+
+                        
+                    #print(f"Discarding message we couldn't handle with {len(decoded_data)} bytes.")
+                    #vals = [struct.unpack('f', x)[0] for x in sliced(decoded_data, 4) if len(x) == 4]
+                    #print([f"{x:.2f}" for x in vals])
             else:
                 recv_buf.append(b)
 
     def handle_input(input_data: str) -> bytearray:
         input_data = input_data.decode().strip(' \r\n')
-        print(input_data, type(input_data))
         try:
-            floats = [float(x) for x in input_data.split(" ")]
+            chunks = input_data.split(" ")
+            if len(chunks) not in [1, 2]:
+                raise ValueError
+            name = chunks[0]
+            if len(chunks) > 1:
+                value = float(chunks[1])
+            else:
+                value = None
         except ValueError:
-            print("Bad input -- only input space-separated floats.")
+            print("Bad input -- only input [NAME] <single float>.")
             return None
 
         # Encode to a COBS buffer
-        data = struct.pack("f"*len(floats), *floats)
+        data =  bytearray(name, "ascii") + bytes([0])
+        if value is not None:
+            data += struct.pack("f", value)
         encoded_data = bytearray(cobs.encode(data))
         encoded_data.append(0)
         return encoded_data
@@ -127,7 +172,7 @@ async def uart_terminal():
             # single BLE packet. We can use the max_write_without_response_size
             # property to split the data into chunks that will fit.
 
-            print("sending:", encoded_data)
+            print("sending cobs data:", encoded_data)
             for s in sliced(encoded_data, rx_char.max_write_without_response_size):
                 await client.write_gatt_char(rx_char, s)
 

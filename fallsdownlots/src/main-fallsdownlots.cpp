@@ -28,12 +28,19 @@ IMU mpu(Wire_l, &Serial);
 ThermistorManager thermistor_l(MOTOR_L_THERMISTOR_READ_PIN, MOTOR_L_THERMISTOR_WRITE_PIN, MOTOR_L_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 ThermistorManager thermistor_r(MOTOR_R_THERMISTOR_READ_PIN, MOTOR_R_THERMISTOR_WRITE_PIN, MOTOR_R_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 
-// Control params. Override by passing float buffer in this order.
+// Control params.
+struct NamedControlParam {
+  // Actual value of the param.
+  float value;
+  // String name by which this param will be referred in the serial protocol. Keep this short.
+  const char * name;
+};
+
 struct ControlParams {
-  float ANGLE_P = 1.0;
-  float ANGLE_D = 0.05;
-  float ODOM_P = 0.01;
-  float ODOM_D = 0.02;
+  NamedControlParam angle_p = {1.0, "ANG_P"};
+  NamedControlParam angle_d = {0.05, "ANG_D"};
+  NamedControlParam odom_p = {0.05, "ODO_P"};
+  NamedControlParam odom_d = {0.02, "ODO_D"};
 } control_params;
 
 // State.
@@ -42,13 +49,45 @@ float integrated_odometry = 0.0;
 // Non-overrideable float params.
 const float BASIN_OF_ATTRACTION = 0.5;
 
+uint8_t send_buf[256];
 void onBLEPacketReceived(const uint8_t *buffer, size_t size)
 {
-  Serial.println("Got packet");
-  if (size == sizeof(ControlParams)){
-    memcpy(&control_params, (const ControlParams*) buffer, sizeof(ControlParams));
-  } 
-  maybe_send_ble_uart((const uint8_t *)&control_params, sizeof(ControlParams));
+  Serial.printf("Got packet %.*s with size %u\n", size, buffer, size);
+  // Get as many chars off the front that are valid ascii chars to get a name.
+  size_t name_len = 0;
+  for (name_len = 0; name_len < size && buffer[name_len] >= 32 && buffer[name_len] <= 127 ;  name_len++) { ; }
+  if (name_len == 0) {
+    Serial.printf("Couldn't parse packet, bad name len %u\n", name_len);
+    return;
+  }
+  int val_len = size - name_len - 1;
+  if (val_len != 0 && val_len != 4){
+    Serial.printf("Got invalid val len in packet: %u\n", val_len);
+    return;
+  }
+  // Check the name against our parameters and see if any match.
+  bool found_matching_param = false;
+  for (uint8_t param_k = 0; param_k < (sizeof(control_params) / sizeof(NamedControlParam)); param_k++){
+    // Hacky technique for iterating over our named control params...
+    auto * control_param = (NamedControlParam *)(&control_params) + param_k;
+    if (strncmp(control_param->name, (const char *)buffer, name_len) == 0){
+      found_matching_param = true;
+      if (val_len == 4){
+        // Update param.
+        control_param->value = * (float *) (buffer + name_len + 1);
+      }
+
+      memcpy(send_buf, buffer, name_len + 1);
+      memcpy(send_buf + name_len + 1, &(control_param->value), sizeof(float));
+      Serial.printf("Sending updated value from name len %u, of %.*s to %f (%u,%u,%u,%u)\n", name_len, name_len, buffer, control_param->value, *(send_buf+name_len+1), *(send_buf+name_len+2), *(send_buf+name_len+3), *(send_buf+name_len+4));
+      maybe_send_ble_uart(send_buf, name_len + 1 + sizeof(float));
+      Serial.printf("Sending updated value of %.*s to %f (%u,%u,%u,%u)\n", name_len, buffer, control_param->value, *(send_buf+name_len+1), *(send_buf+name_len+2), *(send_buf+name_len+3), *(send_buf+name_len+4));
+      break;
+    }
+  }
+  if (!found_matching_param){
+    Serial.printf("Couldn't find param with name %.*s to update\n", name_len, buffer);
+  }
 }
 
 void setup()
@@ -161,7 +200,7 @@ void do_control()
   float target_torque = 0.0;
   if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION)
   {
-    target_torque = control_params.ANGLE_P * mpu.angle() + control_params.ANGLE_D * mpu.dangle() + integrated_odometry * control_params.ODOM_P + average_velocity * control_params.ODOM_D;
+    target_torque = control_params.angle_p.value * mpu.angle() + control_params.angle_d.value * mpu.dangle() + integrated_odometry * control_params.odom_p.value + average_velocity * control_params.odom_d.value;
   } else {
     integrated_odometry = 0.0;
   }
@@ -177,7 +216,7 @@ long unsigned int last_sent_state_est_t = 0;
 long unsigned int last_command_t = 0;
 long unsigned int last_thermistor_read_t = 0;
 long unsigned int last_ble_uart_update = 0;
-float ble_state_send_buffer[9]; // Will be populated with pitch, yaw, d_pitch, d_yaw, odom, control_l, control_r, temp_l, temp_r
+float ble_state_send_buffer[8]; // Will be populated with pitch, yaw, d_pitch, d_yaw, odom, control_l, control_r, max_motor_temp
 void loop()
 {
   long unsigned int t = millis();
@@ -215,7 +254,7 @@ void loop()
     update_ble_uart();
   }
 
-  if (t - last_sent_state_est_t > 33)
+  if (t - last_sent_state_est_t > 50)
   {
     last_sent_state_est_t = t;
     // display the angle and the angular velocity to the terminal
@@ -229,7 +268,7 @@ void loop()
     ble_state_send_buffer[1] = integrated_odometry;
     ble_state_send_buffer[2] = 1000. * mpu.avg_update_dt();
     ble_state_send_buffer[3] = max(l_temp, r_temp);
-    maybe_send_ble_uart((uint8_t *)ble_state_send_buffer, sizeof(float) * 9);
+    maybe_send_ble_uart((uint8_t *)ble_state_send_buffer, sizeof(float) * 8);
   }
 
   if (t - last_printed_status_t > 250)
@@ -241,7 +280,7 @@ void loop()
     float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
-    Serial.printf("9 L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
+    Serial.printf("8 L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
     mpu.reset_worst_update_dt();
   }
   
