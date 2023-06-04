@@ -23,8 +23,7 @@ UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 # TIP: you can get this function and more from the ``more-itertools`` package.
 def sliced(data: bytes, n: int) -> Iterator[bytes]:
     """
-    Slices *data* into chunks of size *n*. The last slice may be smaller than
-    *n*.
+    Slices `data` into chunks of size `n`. The last slice may be smaller than `n`.
     """
     return takewhile(len, (data[i : i + n] for i in count(0, n)))
 
@@ -68,7 +67,8 @@ async def uart_terminal():
                     print("Could not decode: ", e)
                 recv_buf.clear()
                 if decoded_data:
-                    vals = [struct.unpack('f', x)[0] for x in sliced(decoded_data, 4)]
+                    print(len(decoded_data))
+                    vals = [struct.unpack('f', x)[0] for x in sliced(decoded_data, 4) if len(x) == 4]
                     print([f"{x:.2f}" for x in vals])
             else:
                 recv_buf.append(b)

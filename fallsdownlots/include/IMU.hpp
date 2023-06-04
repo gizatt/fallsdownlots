@@ -27,7 +27,7 @@ public:
         1. / 131., 1 / 65.5, 1 / 32.8, 1 / 16.4};
 
     // This class maybe shouldn't exist, as it's inevitably a singleton?
-    IMU(TwoWire& wire, Adafruit_USBD_CDC *serial = nullptr) : m_mpu(0x68, &wire), m_serial(serial), m_have_imu(false), m_dmp_ready(false), m_packet_size(-1), m_last_update_t(micros()), m_avg_update_dt(0.)
+    IMU(TwoWire& wire, Adafruit_USBD_CDC *serial = nullptr) : m_mpu(0x68, &wire), m_serial(serial), m_have_imu(false), m_dmp_ready(false), m_packet_size(-1), m_last_update_t(micros()), m_avg_update_dt(0.), m_worst_update_dt(0.)
     {
     }
 
@@ -126,6 +126,9 @@ public:
             }
             m_avg_update_dt = m_avg_update_dt * 0.99 + dt * 0.01;
             m_last_update_t = t;
+            if (dt >= m_worst_update_dt){
+                m_worst_update_dt = dt;
+            }
         }
         else if (!m_have_imu && dt >= RECONNECT_PERIOD)
         {
@@ -164,6 +167,15 @@ public:
     {
         return m_avg_update_dt;
     }
+    
+    float worst_update_dt()
+    {
+        return m_worst_update_dt;
+    }
+
+    void reset_worst_update_dt(){
+        m_worst_update_dt = 0.0;
+    }
 
 private:
     MPU6050 m_mpu;
@@ -180,6 +192,7 @@ private:
     int16_t m_gyro[3];
     VectorFloat m_gravity;
     float m_avg_update_dt;
+    float m_worst_update_dt;
     Quaternion m_q;
     // FIFO storage buffer.
     uint8_t m_fifo_buffer[64];

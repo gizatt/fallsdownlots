@@ -7,9 +7,11 @@
 // BLE Service
 BLEDfu  bledfu;  // OTA DFU service
 BLEDis  bledis;  // device information
-BLEUart bleuart; // uart over ble
+BLEUart * bleuart; // uart over ble
 
 PacketSerial_<COBS> blueart_packet_serial;
+
+const int BLE_MTU = 20;
 
 void startAdv(void)
 {
@@ -18,7 +20,7 @@ void startAdv(void)
   Bluefruit.Advertising.addTxPower();
 
   // Include bleuart 128-bit uuid
-  Bluefruit.Advertising.addService(bleuart);
+  Bluefruit.Advertising.addService(*bleuart);
 
   // Secondary Scan Response packet (optional)
   // Since there is no room for 'Name' in Advertising packet
@@ -51,10 +53,16 @@ void connect_callback(uint16_t conn_handle)
   Serial.print("Connected to ");
   Serial.println(central_name);
 
+  // Note: as far as I can tell right now, MTU exchange requests
+  // aren't well handled on the PC / Windows Bluetooth driver / Python BLeak
+  // side somewhere -- connections with an MTU over 20 will just hang. That's
+  // a shame, as an MTU of 20 seems to restrict my total effective bandwidth
+  // to be extremely small...
   //connection->requestPHY();
-  //connection->requestMtuExchange(247);
-  //connection->requestDataLengthUpdate();
-    
+  connection->requestMtuExchange(BLE_MTU);
+  connection->requestDataLengthUpdate();
+
+  Bluefruit.printInfo();
   
   // TODO(gizatt) See https://github.com/adafruit/Adafruit_nRF52_Arduino/blob/master/libraries/Bluefruit52Lib/examples/Peripheral/throughput/throughput.ino
   // for some potential connection configuration options for possible speed-up.
@@ -79,8 +87,10 @@ bool begin_ble(const std::string& name){
     Bluefruit.setTxPower(4);    // Check bluefruit.h for supported values
     Bluefruit.Periph.setConnectCallback(connect_callback);
     Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
-    //Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
-    //Bluefruit.configCentralBandwidth(BANDWIDTH_HIGH);
+    //Bluefruit.configPrphBandwidth(BANDWIDTH_LOW);
+    //Bluefruit.configCentralBandwidth(BANDWIDTH_LOW);
+    Bluefruit.configPrphConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT, 10, 10);
+    Bluefruit.configCentralConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT, 10, 10);
 
     // To be consistent OTA DFU should be added first if it exists
     bledfu.begin();
@@ -91,15 +101,17 @@ bool begin_ble(const std::string& name){
     bledis.begin();
 
     // Configure and Start BLE Uart Service
-    bleuart.bufferTXD(true);
-    bleuart.begin();
+     
+    bleuart = new BLEUart(2048);
+    bleuart->bufferTXD(true);
+    bleuart->begin();
     // Set up and start advertising
     startAdv();
 
     Serial.println("BLE setup done.");
 
     // Set up PacketSerial uart wrapper.
-    blueart_packet_serial.setStream(&bleuart);
+    blueart_packet_serial.setStream(bleuart);
 
     return true;
 }
@@ -111,7 +123,7 @@ bool begin_ble(const std::string& name){
 // are received.
 void update_ble_uart(){
   // Echo received data
-  if (Bluefruit.connected() && bleuart.notifyEnabled())
+  if (Bluefruit.connected() && bleuart->notifyEnabled())
   {
     blueart_packet_serial.update();
   }
@@ -119,9 +131,9 @@ void update_ble_uart(){
 
 // Returns true if data was sent.
 bool maybe_send_ble_uart(const uint8_t * buf, int len){
-  if (Bluefruit.connected() && bleuart.notifyEnabled()){
+  if (Bluefruit.connected() && bleuart->notifyEnabled()){
     blueart_packet_serial.send(buf, len);
-    bleuart.flushTXD();
+    bleuart->flushTXD();
     return true;
   } else {
     return false;

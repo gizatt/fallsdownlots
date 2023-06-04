@@ -67,7 +67,7 @@ void setup()
   while (!mpu.try_connect())
   {
     Serial.println("Failed to find MPU6050 chip");
-    delay(500);
+    delay(1000);
   }
   Serial.println("MPU6050 Found!");
 
@@ -83,7 +83,7 @@ void setup()
   as5600_l.init(&Wire_l);
 
   Serial.println("AS5600 ready");
-  _delay(1000);
+  _delay(100);
 
   // initialize motor
   // driver config
@@ -156,7 +156,6 @@ void do_control()
   last_control_update_t = t;
 
   float average_velocity = 0.5 * motor_l.shaftVelocity() + 0.5 * motor_r.shaftVelocity();
-  Serial.printf("Average velocity %0.4f, dt %0.4f", average_velocity, dt);
   integrated_odometry += dt * average_velocity;
 
   float target_torque = 0.0;
@@ -173,11 +172,12 @@ void do_control()
 
 float low_pass_x_acc = 0.;
 
-long unsigned int last_printed_t = 0;
+long unsigned int last_printed_status_t = 0;
+long unsigned int last_sent_state_est_t = 0;
 long unsigned int last_command_t = 0;
 long unsigned int last_thermistor_read_t = 0;
 long unsigned int last_ble_uart_update = 0;
-float ble_send_buffer[7];
+float ble_state_send_buffer[9]; // Will be populated with pitch, yaw, d_pitch, d_yaw, odom, control_l, control_r, temp_l, temp_r
 void loop()
 {
   long unsigned int t = millis();
@@ -215,22 +215,34 @@ void loop()
     update_ble_uart();
   }
 
-  if (t - last_printed_t > 250)
+  if (t - last_sent_state_est_t > 33)
   {
-    last_printed_t = t;
+    last_sent_state_est_t = t;
     // display the angle and the angular velocity to the terminal
     float l_angle = as5600_l.getAngle();
     float l_temp = thermistor_l.get_temperature();
     float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
-    Serial.printf("L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt());
-
     // Send current state as a simple float buffer
-    ble_send_buffer[0] = mpu.angle();
-    ble_send_buffer[1] = integrated_odometry;
-    ble_send_buffer[2] = 1000. * mpu.avg_update_dt();
-    ble_send_buffer[3] = max(l_temp, r_temp);
-    maybe_send_ble_uart((uint8_t *)ble_send_buffer, sizeof(float) * 4);
+    ble_state_send_buffer[0] = mpu.angle();
+    ble_state_send_buffer[1] = integrated_odometry;
+    ble_state_send_buffer[2] = 1000. * mpu.avg_update_dt();
+    ble_state_send_buffer[3] = max(l_temp, r_temp);
+    maybe_send_ble_uart((uint8_t *)ble_state_send_buffer, sizeof(float) * 9);
   }
+
+  if (t - last_printed_status_t > 250)
+  {
+    last_printed_status_t = t;
+    // display the angle and the angular velocity to the terminal
+    float l_angle = as5600_l.getAngle();
+    float l_temp = thermistor_l.get_temperature();
+    float r_angle = as5600_r.getAngle();
+    float r_temp = thermistor_r.get_temperature();
+
+    Serial.printf("9 L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
+    mpu.reset_worst_update_dt();
+  }
+  
 }
