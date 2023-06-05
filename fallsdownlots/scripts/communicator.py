@@ -70,23 +70,25 @@ async def uart_terminal():
                 try:
                     decoded_data = cobs.decode(recv_buf)
                 except cobs.DecodeError as e:
-                    print("Could not decode: ", e)
+                    pass
+                    #print("Could not decode: ", e)
 
                 recv_buf.clear()
                 if decoded_data:
-                    # Possibility 1: It's a string name followed directly by a float.
                     handled = False
 
                     if len(decoded_data) < 20:
                         print(decoded_data)
 
+                    # State buffer with 12 floats
                     try:
-                        values = struct.unpack("ffffffff", decoded_data)
+                        values = struct.unpack("ffffffffffff", decoded_data)
                         handle_state_update(values)
                         return
                     except struct.error:
                         pass
 
+                    # Param update string with parameter name and then float value.
                     #try: 
                     if len(decoded_data) >= 5 and len(decoded_data) <= 30:
                         num_string_bytes = len(decoded_data) - 5

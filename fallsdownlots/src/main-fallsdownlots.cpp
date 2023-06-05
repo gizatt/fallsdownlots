@@ -39,17 +39,22 @@ struct NamedControlParam {
 struct ControlParams {
   NamedControlParam angle_p = {1.0, "ANG_P"};
   NamedControlParam angle_d = {0.05, "ANG_D"};
-  NamedControlParam odom_p = {0.02, "ODO_P"};
-  NamedControlParam odom_d = {0.02, "ODO_D"};
-  NamedControlParam odom_d_target = {0.02, "ODO_DT"};
-  NamedControlParam yaw_d = {0.01, "YAW_D"};
-  NamedControlParam yaw_d_target = {0.01, "YAW_DT"};
-  NamedControlParam target_decay_rc = {1.0, "DECAY_RC"};
-  NamedControlParam target_decay_timeout = {1.0, "DECAY_RC"};
+  NamedControlParam vel_p = {0.02, "VEL_P"};
+  NamedControlParam vel_target = {0.02, "VEL_T"};
+  NamedControlParam vel_i = {0.02, "VEL_I"};
+  NamedControlParam vel_i_max = {2.0, "VEL_IM"}; // 1.0 was barely not enough.
+  NamedControlParam dyaw_p = {0.01, "DYAW_P"};
+  NamedControlParam dyaw_target = {0.01, "DYAW_T"};
+  NamedControlParam dyaw_i = {0.01, "DYAW_I"};
+  NamedControlParam dyaw_i_max = {1.0, "DYAW_IM"};
+  NamedControlParam target_decay_rc = {1.0, "DEC_RC"};
+  NamedControlParam target_decay_timeout = {1.0, "DEC_TM"};
+  NamedControlParam send_state = {0.0, "SEND_STATE"}; // Must set to >= 0.5 to enable sending state messages.
 } control_params;
 
-// State.
-float integrated_odometry = 0.0;
+// Error integrator state
+float integrated_velocity_error = 0.0;
+float integrated_dyaw_error = 0.0;
 
 // Non-overrideable float params.
 const float BASIN_OF_ATTRACTION = 0.5;
@@ -194,6 +199,14 @@ void setup()
   Serial.println("Motor L ready");
 }
 
+float clamp(float x, float lb, float ub){
+  return min(max(x, lb), ub);
+}
+
+float average_velocity(){
+ return 0.5 * motor_l.shaftVelocity() + 0.5 * motor_r.shaftVelocity();
+}
+
 uint32_t last_control_update_t = 0;
 void do_control()
 {
@@ -201,27 +214,33 @@ void do_control()
   float dt = ((float)(t - last_control_update_t)) / 1E6;
   last_control_update_t = t;
 
-  float average_velocity = 0.5 * motor_l.shaftVelocity() + 0.5 * motor_r.shaftVelocity();
-  integrated_odometry += dt * average_velocity;
-
   if (millis() - last_received_ble_packet_millis >= control_params.target_decay_timeout.value * 1000){
     // Decay our "target" inputs back to zero if they're older than our timeout value
     float target_decay_alpha = 1. - dt / (control_params.target_decay_rc.value + dt);
-    control_params.odom_d_target.value *= target_decay_alpha;
-    control_params.yaw_d_target.value *= target_decay_alpha;
+    control_params.vel_target.value *= target_decay_alpha;
+    control_params.dyaw_target.value *= target_decay_alpha;
   }
 
   float target_torque_l = 0.0;
   float target_torque_r = 0.0;
   if (fabs(mpu.pitch()) < BASIN_OF_ATTRACTION)
-  {
+  {  
+    float velocity_error = average_velocity() - control_params.vel_target.value;
+    integrated_velocity_error += dt * velocity_error;
+    integrated_velocity_error = clamp(integrated_velocity_error, -control_params.vel_i_max.value, control_params.vel_i_max.value);
+
+    float dyaw_error = mpu.dyaw() - control_params.dyaw_target.value;
+    integrated_dyaw_error += dt * dyaw_error;
+    integrated_dyaw_error = clamp(integrated_dyaw_error, -control_params.dyaw_i_max.value, control_params.dyaw_i_max.value);
+    
     float pitch_component = control_params.angle_p.value * mpu.pitch() + control_params.angle_d.value * mpu.dpitch();
-    float odometry_component = integrated_odometry * control_params.odom_p.value + (average_velocity - control_params.odom_d_target.value) * control_params.odom_d.value;
-    float dyaw_component = control_params.yaw_d.value * (mpu.dyaw() - control_params.yaw_d_target.value);
+    float odometry_component = control_params.vel_p.value * velocity_error + control_params.vel_i.value * integrated_velocity_error;
+    float dyaw_component = control_params.dyaw_p.value * dyaw_error + control_params.dyaw_i.value * integrated_dyaw_error;
     target_torque_l = pitch_component + odometry_component - dyaw_component;
     target_torque_r = pitch_component + odometry_component + dyaw_component;
   } else {
-    integrated_odometry = 0.0;
+    integrated_velocity_error = 0.0;
+    integrated_dyaw_error = 0.0;
   }
 
   motor_l.move(target_torque_l);
@@ -235,7 +254,7 @@ long unsigned int last_sent_state_est_t = 0;
 long unsigned int last_command_t = 0;
 long unsigned int last_thermistor_read_t = 0;
 long unsigned int last_ble_uart_update = 0;
-float ble_state_send_buffer[8]; // Will be populated with pitch, yaw, d_pitch, d_yaw, odom, control_l, control_r, max_motor_temp
+float ble_state_send_buffer[12]; // Will be populated with pitch, dpitch, dyaw, integrated_velocity_error, integrated_yaw_error, control_l, angle_l, vel_l, control_r, angle_r, vel_r, max_motor_temp
 void loop()
 {
   long unsigned int t = millis();
@@ -273,33 +292,41 @@ void loop()
     update_ble_uart();
   }
 
-  if (t - last_sent_state_est_t > 50)
+  if (t - last_sent_state_est_t > 100 && control_params.send_state.value >= 0.5)
   {
     last_sent_state_est_t = t;
     // display the angle and the angular velocity to the terminal
-    float l_angle = as5600_l.getAngle();
     float l_temp = thermistor_l.get_temperature();
-    float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
     // Send current state as a simple float buffer
     ble_state_send_buffer[0] = mpu.pitch();
-    ble_state_send_buffer[1] = integrated_odometry;
-    ble_state_send_buffer[2] = 1000. * mpu.avg_update_dt();
-    ble_state_send_buffer[3] = max(l_temp, r_temp);
-    maybe_send_ble_uart((uint8_t *)ble_state_send_buffer, sizeof(float) * 8);
+    ble_state_send_buffer[1] = mpu.dpitch();
+    ble_state_send_buffer[2] = mpu.dyaw();
+    ble_state_send_buffer[3] = integrated_velocity_error;
+    ble_state_send_buffer[4] = integrated_dyaw_error;
+    ble_state_send_buffer[5] = motor_l.target;
+    ble_state_send_buffer[6] = as5600_l.getAngle();
+    ble_state_send_buffer[7] = motor_l.shaftVelocity();
+    ble_state_send_buffer[8] = motor_r.target;
+    ble_state_send_buffer[9] = as5600_r.getAngle();
+    ble_state_send_buffer[10] = motor_r.shaftVelocity();
+    ble_state_send_buffer[11] = max(l_temp, r_temp);
+    maybe_send_ble_uart((uint8_t *)ble_state_send_buffer, sizeof(float) * 12);
   }
 
   if (t - last_printed_status_t > 250)
   {
+    // Display detailed stats to the terminal.
     last_printed_status_t = t;
-    // display the angle and the angular velocity to the terminal
-    float l_angle = as5600_l.getAngle();
     float l_temp = thermistor_l.get_temperature();
-    float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
-    Serial.printf("8 L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.pitch(), mpu.dpitch(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
+    Serial.printf("L[%04.2fr %04.2frs %04.2ft %04.2fC] R[%04.2fr %04.2frs  %04.2ft %04.2fC] Int[%04.2f %04.2f] IMU[%04.2f %04.2f %04.2fms avg, %04.2fms worst]\n",
+      as5600_l.getAngle(), motor_l.shaftVelocity(), motor_l.target, l_temp,
+      as5600_r.getAngle(), motor_r.shaftVelocity(), motor_r.target, r_temp,
+      integrated_velocity_error, integrated_dyaw_error,
+      mpu.pitch(), mpu.dpitch(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
     mpu.reset_worst_update_dt();
   }
   
