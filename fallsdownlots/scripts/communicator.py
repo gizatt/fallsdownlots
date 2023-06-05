@@ -31,8 +31,6 @@ def sliced(data: bytes, n: int) -> Iterator[bytes]:
 recv_buf = bytearray()
 
 def handle_control_param_update(name, value):
-    if name not in ["ANG_P", "ANG_D", "ODO_P", "ODO_D"]:
-        raise ValueError(name)
     print(f"Got control param update: {name}, {value}")
 
 def handle_state_update(values):

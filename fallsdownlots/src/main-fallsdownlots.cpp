@@ -39,8 +39,13 @@ struct NamedControlParam {
 struct ControlParams {
   NamedControlParam angle_p = {1.0, "ANG_P"};
   NamedControlParam angle_d = {0.05, "ANG_D"};
-  NamedControlParam odom_p = {0.05, "ODO_P"};
+  NamedControlParam odom_p = {0.02, "ODO_P"};
   NamedControlParam odom_d = {0.02, "ODO_D"};
+  NamedControlParam odom_d_target = {0.02, "ODO_DT"};
+  NamedControlParam yaw_d = {0.01, "YAW_D"};
+  NamedControlParam yaw_d_target = {0.01, "YAW_DT"};
+  NamedControlParam target_decay_rc = {1.0, "DECAY_RC"};
+  NamedControlParam target_decay_timeout = {1.0, "DECAY_RC"};
 } control_params;
 
 // State.
@@ -50,6 +55,7 @@ float integrated_odometry = 0.0;
 const float BASIN_OF_ATTRACTION = 0.5;
 
 uint8_t send_buf[256];
+uint32_t last_received_ble_packet_millis;
 void onBLEPacketReceived(const uint8_t *buffer, size_t size)
 {
   Serial.printf("Got packet %.*s with size %u\n", size, buffer, size);
@@ -79,9 +85,9 @@ void onBLEPacketReceived(const uint8_t *buffer, size_t size)
 
       memcpy(send_buf, buffer, name_len + 1);
       memcpy(send_buf + name_len + 1, &(control_param->value), sizeof(float));
-      Serial.printf("Sending updated value from name len %u, of %.*s to %f (%u,%u,%u,%u)\n", name_len, name_len, buffer, control_param->value, *(send_buf+name_len+1), *(send_buf+name_len+2), *(send_buf+name_len+3), *(send_buf+name_len+4));
       maybe_send_ble_uart(send_buf, name_len + 1 + sizeof(float));
-      Serial.printf("Sending updated value of %.*s to %f (%u,%u,%u,%u)\n", name_len, buffer, control_param->value, *(send_buf+name_len+1), *(send_buf+name_len+2), *(send_buf+name_len+3), *(send_buf+name_len+4));
+      Serial.printf("Got updated value from name len %u, of %.*s to %f\n", name_len, name_len, buffer, control_param->value);
+      last_received_ble_packet_millis = millis();
       break;
     }
   }
@@ -116,6 +122,7 @@ void setup()
     delay(1000);
   }
   blueart_packet_serial.setPacketHandler(&onBLEPacketReceived);
+  last_received_ble_packet_millis = millis();
 
   // Initialize magnetic encoders.
   as5600_r.init(&Wire_r);
@@ -197,16 +204,28 @@ void do_control()
   float average_velocity = 0.5 * motor_l.shaftVelocity() + 0.5 * motor_r.shaftVelocity();
   integrated_odometry += dt * average_velocity;
 
-  float target_torque = 0.0;
-  if (fabs(mpu.angle()) < BASIN_OF_ATTRACTION)
+  if (millis() - last_received_ble_packet_millis >= control_params.target_decay_timeout.value * 1000){
+    // Decay our "target" inputs back to zero if they're older than our timeout value
+    float target_decay_alpha = 1. - dt / (control_params.target_decay_rc.value + dt);
+    control_params.odom_d_target.value *= target_decay_alpha;
+    control_params.yaw_d_target.value *= target_decay_alpha;
+  }
+
+  float target_torque_l = 0.0;
+  float target_torque_r = 0.0;
+  if (fabs(mpu.pitch()) < BASIN_OF_ATTRACTION)
   {
-    target_torque = control_params.angle_p.value * mpu.angle() + control_params.angle_d.value * mpu.dangle() + integrated_odometry * control_params.odom_p.value + average_velocity * control_params.odom_d.value;
+    float pitch_component = control_params.angle_p.value * mpu.pitch() + control_params.angle_d.value * mpu.dpitch();
+    float odometry_component = integrated_odometry * control_params.odom_p.value + (average_velocity - control_params.odom_d_target.value) * control_params.odom_d.value;
+    float dyaw_component = control_params.yaw_d.value * (mpu.dyaw() - control_params.yaw_d_target.value);
+    target_torque_l = pitch_component + odometry_component - dyaw_component;
+    target_torque_r = pitch_component + odometry_component + dyaw_component;
   } else {
     integrated_odometry = 0.0;
   }
 
-  motor_l.move(target_torque);
-  motor_r.move(target_torque);
+  motor_l.move(target_torque_l);
+  motor_r.move(target_torque_r);
 }
 
 float low_pass_x_acc = 0.;
@@ -264,7 +283,7 @@ void loop()
     float r_temp = thermistor_r.get_temperature();
 
     // Send current state as a simple float buffer
-    ble_state_send_buffer[0] = mpu.angle();
+    ble_state_send_buffer[0] = mpu.pitch();
     ble_state_send_buffer[1] = integrated_odometry;
     ble_state_send_buffer[2] = 1000. * mpu.avg_update_dt();
     ble_state_send_buffer[3] = max(l_temp, r_temp);
@@ -280,7 +299,7 @@ void loop()
     float r_angle = as5600_r.getAngle();
     float r_temp = thermistor_r.get_temperature();
 
-    Serial.printf("8 L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.angle(), mpu.dangle(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
+    Serial.printf("8 L[%08.4f rad, %04.1fC] R[%08.4f, %04.1fC] Odom[%04.1f] IMU[%03.1f %03.1f %03.1fms %03.1fms]\n", l_angle, l_temp, r_angle, r_temp, integrated_odometry, mpu.pitch(), mpu.dpitch(), 1000. * mpu.avg_update_dt(), 1000. * mpu.worst_update_dt());
     mpu.reset_worst_update_dt();
   }
   
