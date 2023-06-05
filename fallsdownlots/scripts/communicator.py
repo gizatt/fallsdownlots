@@ -2,6 +2,7 @@
 Adapted from the BLEAK UART service example.
 """
 
+import typing
 import traceback
 import struct
 import asyncio
@@ -27,19 +28,13 @@ def sliced(data: bytes, n: int) -> Iterator[bytes]:
     """
     return takewhile(len, (data[i : i + n] for i in count(0, n)))
 
-
 recv_buf = bytearray()
 
-def handle_control_param_update(name, value):
-    print(f"Got control param update: {name}, {value}")
-
-def handle_state_update(values):
-    pass
-
-async def uart_terminal():
-    """This is a simple "terminal" program that uses the Nordic Semiconductor
-    (nRF) UART service. It reads from stdin and sends each line of data to the
-    remote device. Any data received from the device is printed to stdout.
+async def uart_terminal(get_packet_to_send, handle_control_param_update, handle_state_update):
+    """
+        Connects to the robot over BLE UART, handing state update (float lists)
+        to `handle_state_update`, control param updates to `handle_control_param_update`,
+        and polling `get_packet_to_send` for new serial packets to send over to the robot.
     """
 
     def match_nus_uuid(device: BLEDevice, adv: AdvertisementData):
@@ -51,6 +46,7 @@ async def uart_terminal():
 
         return False
 
+    print("Looking for device...")
     device = await BleakScanner.find_device_by_filter(match_nus_uuid)
 
     if device is None:
@@ -77,9 +73,6 @@ async def uart_terminal():
                 if decoded_data:
                     handled = False
 
-                    if len(decoded_data) < 20:
-                        print(decoded_data)
-
                     # State buffer with 12 floats
                     try:
                         values = struct.unpack("ffffffffffff", decoded_data)
@@ -88,47 +81,28 @@ async def uart_terminal():
                     except struct.error:
                         pass
 
-                    # Param update string with parameter name and then float value.
-                    #try: 
-                    if len(decoded_data) >= 5 and len(decoded_data) <= 30:
-                        num_string_bytes = len(decoded_data) - 5
-                        name = decoded_data[:num_string_bytes].decode('ascii')
-                        if decoded_data[num_string_bytes] != 0:
-                            raise ValueError()
-                        value = struct.unpack(f"f", decoded_data[-4:])[0]
-                        handle_control_param_update(name, value)
-                        return
-#                    except struct.error:
-#                        pass
-#                    except UnicodeDecodeError:
-#                        pass
-
-                        
+                    # Param update string with parameter name and then float value. 
+                    try: 
+                        if len(decoded_data) >= 5 and len(decoded_data) <= 30:
+                            num_string_bytes = len(decoded_data) - 5
+                            name = decoded_data[:num_string_bytes].decode('ascii')
+                            if decoded_data[num_string_bytes] != 0:
+                                raise ValueError()
+                            value = struct.unpack(f"f", decoded_data[-4:])[0]
+                            handle_control_param_update(name, value)
+                            return
+                    except struct.error:
+                        pass
+                    except UnicodeDecodeError:
+                        pass
+    
                     #print(f"Discarding message we couldn't handle with {len(decoded_data)} bytes.")
                     #vals = [struct.unpack('f', x)[0] for x in sliced(decoded_data, 4) if len(x) == 4]
                     #print([f"{x:.2f}" for x in vals])
             else:
                 recv_buf.append(b)
 
-    def handle_input(input_data: str) -> bytearray:
-        input_data = input_data.decode().strip(' \r\n')
-        try:
-            chunks = input_data.split(" ")
-            if len(chunks) not in [1, 2]:
-                raise ValueError
-            name = chunks[0]
-            if len(chunks) > 1:
-                value = float(chunks[1])
-            else:
-                value = None
-        except ValueError:
-            print("Bad input -- only input [NAME] <single float>.")
-            return None
-
-        # Encode to a COBS buffer
-        data =  bytearray(name, "ascii") + bytes([0])
-        if value is not None:
-            data += struct.pack("f", value)
+    def handle_input(data: bytes) -> bytearray:
         encoded_data = bytearray(cobs.encode(data))
         encoded_data.append(0)
         return encoded_data
@@ -136,7 +110,7 @@ async def uart_terminal():
     async with BleakClient(device, disconnected_callback=handle_disconnect) as client:
         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
 
-        print("Connected, start typing and press ENTER...")
+        print("Connected, starting main loop...")
 
         loop = asyncio.get_running_loop()
         nus = client.services.get_service(UART_SERVICE_UUID)
@@ -146,11 +120,16 @@ async def uart_terminal():
             # This waits until you type a line and press ENTER.
             # A real terminal program might put stdin in raw mode so that things
             # like CTRL+C get passed to the remote device.
-            input_data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
-
-            # data will be empty on EOF (e.g. CTRL+D on *nix)
-            if not input_data:
+            try:
+                input_data = await loop.run_in_executor(None, get_packet_to_send)
+            except Exception as e:
+                print("Got exception in get_packet_to_send: ", e)
                 break
+            if input_data is None:
+                break
+
+            if len(input_data) == 0:
+                continue
 
             try:
                 encoded_data = await loop.run_in_executor(None, handle_input, input_data)
@@ -179,8 +158,42 @@ async def uart_terminal():
             
             
 if __name__ == "__main__":
+    def handle_control_param_update(name : str, value : float):
+        print(f"Got control param update: {name}, {value}")
+
+    def handle_state_update(values : typing.Iterable[float]):
+        print("Got state update: ", values)
+
+    def get_packet_to_send() -> bytes:
+        '''
+            Returning `None` aborts the program. Returning an empty bytes send snothing.
+        '''
+        input = sys.stdin.buffer.readline()
+        if not input:
+            print("Got nothing from input(), returning None to terminate.")
+            return None
+        input_data = input.decode().strip(' \r\n')
+        print(input_data)
+        try:
+            chunks = input_data.split(" ")
+            if len(chunks) not in [1, 2]:
+                raise ValueError
+            name = chunks[0]
+            if len(chunks) > 1:
+                value = float(chunks[1])
+            else:
+                value = None
+        except ValueError:
+            print("Bad input -- only input [NAME] <single float>.")
+            return bytes()
+
+        data =  bytearray(name, "ascii") + bytes([0])
+        if value is not None:
+            data += struct.pack("f", value)
+        return data
+
     try:
-        asyncio.run(uart_terminal())
+        asyncio.run(uart_terminal(get_packet_to_send, handle_control_param_update, handle_state_update))
     except asyncio.CancelledError:
         # task is cancelled on disconnect, so we ignore this error
         pass
