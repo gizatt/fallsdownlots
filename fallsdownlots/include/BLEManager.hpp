@@ -91,12 +91,6 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   bleuart->flushTXD();
 }
 
-void bleuart_rx_callback(uint16_t conn_hdl)
-{
-  blueart_packet_serial.update();
-  bleuart->flush(); // empty rx fifo
-}
-
 bool begin_ble(const std::string& name){
   
     Bluefruit.configCentralConn(247, 6, 10, 10); // bigger-than-normal queue sizes
@@ -121,10 +115,9 @@ bool begin_ble(const std::string& name){
 
     // Configure and Start BLE Uart Service
      
-    bleuart = new BLEUart(2048);
-    bleuart->bufferTXD(true);
+    bleuart = new BLEUart(BLE_MTU * 2);
+    //bleuart->bufferTXD(true);
     bleuart->begin();
-    // bleuart->setRxCallback(bleuart_rx_callback; // removed for fear of a possible deadlock
     // Set up and start advertising
     startAdv();
 
@@ -153,7 +146,7 @@ void update_ble_uart(){
 bool maybe_send_ble_uart(const uint8_t * buf, int len){
   if (Bluefruit.connected() && bleuart->notifyEnabled()){
     blueart_packet_serial.send(buf, len);
-    bleuart->flushTXD();
+    //bleuart->flushTXD();
     return true;
   } else {
     return false;

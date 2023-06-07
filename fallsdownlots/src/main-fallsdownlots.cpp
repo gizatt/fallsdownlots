@@ -63,7 +63,6 @@ uint8_t send_buf[256];
 uint32_t last_received_ble_packet_millis;
 void onBLEPacketReceived(const uint8_t *buffer, size_t size)
 {
-  Serial.printf("Got packet %.*s with size %u\n", size, buffer, size);
   // Get as many chars off the front that are valid ascii chars to get a name.
   size_t name_len = 0;
   for (name_len = 0; name_len < size && buffer[name_len] >= 32 && buffer[name_len] <= 127 ;  name_len++) { ; }
@@ -91,7 +90,6 @@ void onBLEPacketReceived(const uint8_t *buffer, size_t size)
       memcpy(send_buf, buffer, name_len + 1);
       memcpy(send_buf + name_len + 1, &(control_param->value), sizeof(float));
       maybe_send_ble_uart(send_buf, name_len + 1 + sizeof(float));
-      Serial.printf("Got updated value from name len %u, of %.*s to %f\n", name_len, name_len, buffer, control_param->value);
       last_received_ble_packet_millis = millis();
       break;
     }
@@ -292,7 +290,7 @@ void loop()
     update_ble_uart();
   }
 
-  if (t - last_sent_state_est_t > 33 && control_params.send_state.value >= 0.5)
+  if (t - last_sent_state_est_t > 50 && control_params.send_state.value >= 0.5)
   {
     last_sent_state_est_t = t;
     // display the angle and the angular velocity to the terminal

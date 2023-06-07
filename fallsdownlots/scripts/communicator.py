@@ -10,7 +10,10 @@ import sys
 from itertools import count, takewhile
 from typing import Iterator
 from cobs import cobs
+import time
 import os
+import numpy as np
+import matplotlib.pyplot as plt
 
 os.environ["BLEAK_LOGGING"] = "1"
 
@@ -125,8 +128,9 @@ async def uart_terminal(get_packet_to_send, handle_control_param_update, handle_
             # This waits until you type a line and press ENTER.
             # A real terminal program might put stdin in raw mode so that things
             # like CTRL+C get passed to the remote device.
+            await asyncio.sleep(0.01)
             try:
-                input_data = await loop.run_in_executor(None, get_packet_to_send)
+                input_data = await get_packet_to_send()
             except Exception as e:
                 print("Got exception in get_packet_to_send: ", e)
                 break
@@ -160,16 +164,84 @@ async def uart_terminal(get_packet_to_send, handle_control_param_update, handle_
             for s in sliced(encoded_data, rx_char.max_write_without_response_size):
                 await client.write_gatt_char(rx_char, s)
 
-            
-            
+class StatePlotter():
+    '''
+        Expected data:
+        pitch, dpitch, dyaw, integrated_velocity_error, integrated_yaw_error, control_l, angle_l, vel_l, control_r, angle_r, vel_r, max_motor_temp
+
+        Plots:
+            1) pitch, dpitch, dyaw
+            2) l control, anngle, vel
+            3) r control, angle, vel
+            4) Integrators   5) Temp
+    '''
+    FIELDS = [
+        "pitch", "dpitch", "dyaw", "int_vel_error", "int_yaw_error", "l_control", "l_angle", "l_vel", "r_control", "r_angle", "r_vel", "max temp"
+    ]
+    FIELDS_BY_SUBPLOT = {
+        'State': ["pitch", "dpitch", "dyaw"],
+        'LWheel': ['l_control', 'l_angle', 'l_vel'],
+        'RWheel': ['r_control', 'r_angle', 'r_vel'],
+        'Integrators': ['int_vel_error', 'int_yaw_error'],
+        'Temp': ['max temp']
+    }
+    HISTORY_LEN = 200
+    def __init__(self):
+        plt.ion()
+
+        self.fig, self.axs = plt.subplot_mosaic([['State', 'State'], ['LWheel', 'LWheel'], ['RWheel', 'RWheel'], ['Integrators', 'Temp']],
+                              layout='constrained')
+        self.fig.set_size_inches(12, 6)
+        
+        # Initial plot to get all the lines and legends drawn.
+        self.lines_by_field = {}
+        self.data_by_field = {}
+        self.data_mutex = asyncio.Lock()
+        self.t0 = time.time()
+        self.ts = np.zeros(self.HISTORY_LEN)
+        for subplot_name, ax in self.axs.items():
+            ax.set_ylabel(subplot_name)
+            assert subplot_name in self.FIELDS_BY_SUBPLOT, f"Bad subplot name {subplot_name}"
+            for field_name in self.FIELDS_BY_SUBPLOT[subplot_name]:
+                self.data_by_field[field_name] = np.zeros(self.HISTORY_LEN)
+                self.lines_by_field[field_name] = ax.plot(self.ts, self.data_by_field[field_name], label=field_name)[0]
+            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.pause(1E-3)
+
+    async def update(self):
+        while True:
+            async with self.data_mutex:
+                for field_name in self.FIELDS:
+                    line = self.lines_by_field[field_name]
+                    line.set_xdata(self.ts)
+                    line.set_ydata(self.data_by_field[field_name])
+            for ax in self.axs.values():
+                ax.relim()
+                ax.autoscale_view(True,True,True)
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
+            await asyncio.sleep(0.25)
+
+    def handle_state_update(self, values : typing.Iterable[float]):
+        # Can't get the lock in this thread as this isn't an async function... ugh asyncio is confusing.
+        print("Got state update: ", values)
+        assert len(values) == len(self.FIELDS)
+        self.ts[:] = np.roll(self.ts, -1)
+        self.ts[-1] = time.time() - self.t0
+        for field_name, new_value in zip(self.FIELDS, values):
+            data = self.data_by_field[field_name]
+            data[:] = np.roll(data, -1) # in-place modification
+            data[-1] = new_value
+
 if __name__ == "__main__":
     def handle_control_param_update(name : str, value : float):
         print(f"Got control param update: {name}, {value}")
 
-    def handle_state_update(values : typing.Iterable[float]):
-        print("Got state update: ", values)
+    state_plotter = StatePlotter()
+    handle_state_update = state_plotter.handle_state_update
+    
 
-    def get_packet_to_send() -> bytes:
+    async def get_packet_to_send() -> bytes:
         '''
             Returning `None` aborts the program. Returning an empty bytes send snothing.
         '''
@@ -198,7 +270,14 @@ if __name__ == "__main__":
         return data
 
     try:
-        asyncio.run(uart_terminal(get_packet_to_send, handle_control_param_update, handle_state_update))
+        async def all_tasks():
+            # Schedule three calls *concurrently*:
+            await asyncio.gather(
+                uart_terminal(get_packet_to_send, handle_control_param_update, handle_state_update),
+                state_plotter.update()
+            )
+        asyncio.run(all_tasks())
+
     except asyncio.CancelledError:
         # task is cancelled on disconnect, so we ignore this error
         pass
