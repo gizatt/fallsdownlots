@@ -10,6 +10,9 @@ import sys
 from itertools import count, takewhile
 from typing import Iterator
 from cobs import cobs
+import os
+
+os.environ["BLEAK_LOGGING"] = "1"
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -75,7 +78,7 @@ async def uart_terminal(get_packet_to_send, handle_control_param_update, handle_
 
                     # State buffer with 12 floats
                     try:
-                        values = struct.unpack("ffffffffffff", decoded_data)
+                        values = struct.unpack("f" * 12, decoded_data)
                         handle_state_update(values)
                         return
                     except struct.error:
@@ -96,7 +99,7 @@ async def uart_terminal(get_packet_to_send, handle_control_param_update, handle_
                     except UnicodeDecodeError:
                         pass
     
-                    #print(f"Discarding message we couldn't handle with {len(decoded_data)} bytes.")
+                    print(f"Discarding message we couldn't handle with {len(decoded_data)} bytes:, {decoded_data}")
                     #vals = [struct.unpack('f', x)[0] for x in sliced(decoded_data, 4) if len(x) == 4]
                     #print([f"{x:.2f}" for x in vals])
             else:
@@ -107,7 +110,9 @@ async def uart_terminal(get_packet_to_send, handle_control_param_update, handle_
         encoded_data.append(0)
         return encoded_data
 
+    print("Found device, creating client")
     async with BleakClient(device, disconnected_callback=handle_disconnect) as client:
+        print("Start notify call")
         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
 
         print("Connected, starting main loop...")

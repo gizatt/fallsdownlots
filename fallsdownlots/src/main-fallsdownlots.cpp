@@ -286,13 +286,13 @@ void loop()
     thermistor_r.update();
   }
 
-  if (t - last_ble_uart_update > 10)
+  if (t - last_ble_uart_update > 1)
   {
     last_ble_uart_update = t;
     update_ble_uart();
   }
 
-  if (t - last_sent_state_est_t > 100 && control_params.send_state.value >= 0.5)
+  if (t - last_sent_state_est_t > 33 && control_params.send_state.value >= 0.5)
   {
     last_sent_state_est_t = t;
     // display the angle and the angular velocity to the terminal

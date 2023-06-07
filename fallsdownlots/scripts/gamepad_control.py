@@ -19,7 +19,7 @@ if __name__ == "__main__":
     
     yaw_scaling = 5.0
     vel_scaling = 5.0
-    alpha = 0.25
+    alpha = 0.6
     send_state = False
 
 
@@ -29,9 +29,14 @@ if __name__ == "__main__":
         '''
         global yaw_target_smoothed, vel_target_smoothed, send_state
 
-        yaw_target = yaw_scaling * keyboard.is_pressed('right') - yaw_scaling * keyboard.is_pressed('left') 
-        vel_target = vel_scaling * keyboard.is_pressed('up') - vel_scaling * keyboard.is_pressed('down') 
+        if keyboard.is_pressed('shift'):
+            scaling = 2.0
+        else:
+            scaling = 1.0
 
+        yaw_target = scaling * (yaw_scaling * keyboard.is_pressed('right') - yaw_scaling * keyboard.is_pressed('left'))
+        vel_target = scaling * (vel_scaling * keyboard.is_pressed('up') - vel_scaling * keyboard.is_pressed('down'))
+        
         yaw_target_smoothed = yaw_target_smoothed * alpha + yaw_target * (1. - alpha)
         vel_target_smoothed = vel_target_smoothed * alpha + vel_target * (1. - alpha)
         print(vel_target_smoothed, yaw_target_smoothed)
@@ -41,7 +46,7 @@ if __name__ == "__main__":
             ret = bytes("DYAW_T", 'ascii') + bytes([0]) + struct.pack('f', yaw_target_smoothed)
         send_state = not send_state
 
-        time.sleep(0.2)
+        time.sleep(0.1)
         return ret
 
     try:

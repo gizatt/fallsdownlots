@@ -11,7 +11,7 @@ BLEUart * bleuart; // uart over ble
 
 PacketSerial_<COBS> blueart_packet_serial;
 
-const int BLE_MTU = 20;
+const int BLE_MTU = 64;
 
 void startAdv(void)
 {
@@ -38,7 +38,7 @@ void startAdv(void)
   Bluefruit.Advertising.restartOnDisconnect(true);
   Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
   Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
-  Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds  
+  Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds 
 }
 
 // callback invoked when central connects
@@ -53,14 +53,20 @@ void connect_callback(uint16_t conn_handle)
   Serial.print("Connected to ");
   Serial.println(central_name);
 
+  // Give connection time to stabilize
+  delay(1000);
+
   // Note: as far as I can tell right now, MTU exchange requests
   // aren't well handled on the PC / Windows Bluetooth driver / Python BLeak
   // side somewhere -- connections with an MTU over 20 will just hang. That's
   // a shame, as an MTU of 20 seems to restrict my total effective bandwidth
   // to be extremely small...
-  //connection->requestPHY();
+  connection->requestPHY();
+  delay(1000);
   connection->requestMtuExchange(BLE_MTU);
+  delay(1000);
   connection->requestDataLengthUpdate();
+  delay(1000);
 
   Bluefruit.printInfo();
   
@@ -80,17 +86,30 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
 
   Serial.println();
   Serial.print("Disconnected, reason = 0x"); Serial.println(reason, HEX);
+
+  bleuart->flush();
+  bleuart->flushTXD();
+}
+
+void bleuart_rx_callback(uint16_t conn_hdl)
+{
+  blueart_packet_serial.update();
+  bleuart->flush(); // empty rx fifo
 }
 
 bool begin_ble(const std::string& name){
+  
+    Bluefruit.configCentralConn(247, 6, 10, 10); // bigger-than-normal queue sizes
+    Bluefruit.configPrphConn(247, 6, 10, 10);
+    //Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+    //Bluefruit.configCentralBandwidth(BANDWIDTH_MAX);
     Bluefruit.begin();
+
     Bluefruit.setTxPower(4);    // Check bluefruit.h for supported values
     Bluefruit.Periph.setConnectCallback(connect_callback);
     Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
-    //Bluefruit.configPrphBandwidth(BANDWIDTH_LOW);
-    //Bluefruit.configCentralBandwidth(BANDWIDTH_LOW);
-    Bluefruit.configPrphConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT, 10, 10);
-    Bluefruit.configCentralConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT, 10, 10);
+    //Bluefruit.configPrphConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT, 10, 10);
+    //Bluefruit.configCentralConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT, 10, 10);
 
     // To be consistent OTA DFU should be added first if it exists
     bledfu.begin();
@@ -105,6 +124,7 @@ bool begin_ble(const std::string& name){
     bleuart = new BLEUart(2048);
     bleuart->bufferTXD(true);
     bleuart->begin();
+    // bleuart->setRxCallback(bleuart_rx_callback; // removed for fear of a possible deadlock
     // Set up and start advertising
     startAdv();
 
