@@ -24,6 +24,8 @@ const int MOTOR_L_THERMISTOR_READ_PIN = A2;
 const int MOTOR_L_THERMISTOR_WRITE_PIN = A1;
 const float MOTOR_L_THERMISTOR_R_DIVIDER = 1000; // ohms
 
+const float MAX_TEMP = 70.0; // Celsius, max temp for motors before thermal shutoff disables control.
+
 IMU mpu(Wire_l, &Serial);
 ThermistorManager thermistor_l(MOTOR_L_THERMISTOR_READ_PIN, MOTOR_L_THERMISTOR_WRITE_PIN, MOTOR_L_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
 ThermistorManager thermistor_r(MOTOR_R_THERMISTOR_READ_PIN, MOTOR_R_THERMISTOR_WRITE_PIN, MOTOR_R_THERMISTOR_R_DIVIDER, MOTOR_THERMISTOR_LOWPASS_RC);
@@ -38,14 +40,16 @@ struct NamedControlParam {
 
 struct ControlParams {
   NamedControlParam angle_p = {1.0, "ANG_P"};
-  NamedControlParam angle_d = {0.05, "ANG_D"};
+  NamedControlParam angle_d = {0.06, "ANG_D"};
+  NamedControlParam angle_target_rc = {10.0, "ANG_RC"};
+  NamedControlParam angle_error_max = {1.0, "ANG_TM"};
   NamedControlParam vel_p = {0.02, "VEL_P"};
-  NamedControlParam vel_target = {0.02, "VEL_T"};
-  NamedControlParam vel_i = {0.02, "VEL_I"};
-  NamedControlParam vel_i_max = {2.0, "VEL_IM"}; // 1.0 was barely not enough.
-  NamedControlParam dyaw_p = {0.01, "DYAW_P"};
-  NamedControlParam dyaw_target = {0.01, "DYAW_T"};
-  NamedControlParam dyaw_i = {0.01, "DYAW_I"};
+  NamedControlParam vel_target = {0.0, "VEL_T"};
+  NamedControlParam vel_i = {0.01, "VEL_I"};
+  NamedControlParam vel_i_max = {10.0, "VEL_IM"}; // More than enough. Probably getting a little windup here.
+  NamedControlParam dyaw_p = {0.05, "DYAW_P"};
+  NamedControlParam dyaw_target = {0.00, "DYAW_T"};
+  NamedControlParam dyaw_i = {0.00, "DYAW_I"};
   NamedControlParam dyaw_i_max = {1.0, "DYAW_IM"};
   NamedControlParam target_decay_rc = {1.0, "DEC_RC"};
   NamedControlParam target_decay_timeout = {1.0, "DEC_TM"};
@@ -55,9 +59,8 @@ struct ControlParams {
 // Error integrator state
 float integrated_velocity_error = 0.0;
 float integrated_dyaw_error = 0.0;
+float average_angle = 0.0;
 
-// Non-overrideable float params.
-const float BASIN_OF_ATTRACTION = 0.5;
 
 uint8_t send_buf[256];
 uint32_t last_received_ble_packet_millis;
@@ -221,8 +224,13 @@ void do_control()
 
   float target_torque_l = 0.0;
   float target_torque_r = 0.0;
-  if (fabs(mpu.pitch()) < BASIN_OF_ATTRACTION)
+  if (fabs(mpu.pitch()) < control_params.angle_error_max.value && thermistor_l.get_temperature() <= MAX_TEMP && thermistor_r.get_temperature() <= MAX_TEMP)
   {  
+    // Update estimated "upright" angle by averaging our angle measurements.
+    float alpha = 1.0 - dt / (control_params.angle_target_rc.value + dt);
+    average_angle = average_angle * alpha + (1.0 - alpha) * mpu.pitch();
+
+    float pitch_error = mpu.pitch() - average_angle;
     float velocity_error = average_velocity() - control_params.vel_target.value;
     integrated_velocity_error += dt * velocity_error;
     integrated_velocity_error = clamp(integrated_velocity_error, -control_params.vel_i_max.value, control_params.vel_i_max.value);
@@ -231,7 +239,7 @@ void do_control()
     integrated_dyaw_error += dt * dyaw_error;
     integrated_dyaw_error = clamp(integrated_dyaw_error, -control_params.dyaw_i_max.value, control_params.dyaw_i_max.value);
     
-    float pitch_component = control_params.angle_p.value * mpu.pitch() + control_params.angle_d.value * mpu.dpitch();
+    float pitch_component = control_params.angle_p.value * pitch_error + control_params.angle_d.value * mpu.dpitch();
     float odometry_component = control_params.vel_p.value * velocity_error + control_params.vel_i.value * integrated_velocity_error;
     float dyaw_component = control_params.dyaw_p.value * dyaw_error + control_params.dyaw_i.value * integrated_dyaw_error;
     target_torque_l = pitch_component + odometry_component - dyaw_component;
@@ -239,6 +247,7 @@ void do_control()
   } else {
     integrated_velocity_error = 0.0;
     integrated_dyaw_error = 0.0;
+    average_angle = 0.0;
   }
 
   motor_l.move(target_torque_l);
@@ -252,6 +261,7 @@ long unsigned int last_sent_state_est_t = 0;
 long unsigned int last_command_t = 0;
 long unsigned int last_thermistor_read_t = 0;
 long unsigned int last_ble_uart_update = 0;
+
 float ble_state_send_buffer[12]; // Will be populated with pitch, dpitch, dyaw, integrated_velocity_error, integrated_yaw_error, control_l, angle_l, vel_l, control_r, angle_r, vel_r, max_motor_temp
 void loop()
 {
