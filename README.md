@@ -7,7 +7,7 @@ For ease of control tuning, I chose a main board with Bluetooth Low-Energy (BLE)
 I mostly rely on [SimpleFOC](https://simplefoc.com/) for the actual FOC implementation, and took their advice on sensor and drive chip choice. I'd like to dive deeper into controlling these motors better -- for example, trying to compensate for cogging torque to get smoother operation - but I have more fundamental issues to fix first (see below).
 
 - For code, see the `fallsdownlots` subdirectory (which is a PlatformIO package).
-- For CAD, see [Onshape](https://cad.onshape.com/documents/34e0d9ef519aef4b34c19df6/w/b4fc20d7f51a03280199ecb2/e/801a65f226a9bb9fc692247b?renderMode=0&uiState=648a75b56f21326dd5086d67). Sorry it's not organized into a main assembly yet, this is just my 3D print part workshop.
+- For CAD, see [Onshape](https://cad.onshape.com/documents/34e0d9ef519aef4b34c19df6/w/b4fc20d7f51a03280199ecb2/e/801a65f226a9bb9fc692247b?renderMode=0&uiState=648a75b56f21326dd5086d67). Sorry it's not organized into a main assembly yet, this is just my 3D print part workshop. Approximately up-to-date STLS are in the `stls` subdirectory. Print `MotorMount` twice, mirroring one of them. Print `Wheel` twice. Print `Tire` twice in TPU or another tacky, flexible filament.
 - For PCB design and electrical schematics, see `board_v2` subdirectory (which is a KiCad project).
 
 ## Diagram and Parts List
