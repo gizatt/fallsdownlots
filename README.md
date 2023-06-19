@@ -1,5 +1,11 @@
 # FallsDownLots
-<video src='https://github.com/gizatt/fallsdownlots/blob/master/media/cargo_demo.mp4' width=180></video>
+<img src="media/remote_control_demo.gif"/>
+<details>
+  <summary>Click to expand more demo GIFs</summary>
+  <img src="media/fall_demo.gif"/>
+  <img src="media/cargo_demo.gif"/>
+  <img src="media/flipup_demo.gif"/>
+</details>
 
 ## About
 This project ("FallsDownLots") is a 2-wheeled balancing robot designed around two brushless DC (BLDC) gimbal motors, controlled with field-oriented control. Previous iterations of wheeled balancing robots I've built have been plagued by issues with poor motor control (primarily backlash, inertia, and friction causing shaky control around the upright fixed point). This project instead uses a high-torque (specifically low KV / high winding count) 3-phase motor, paired with an absolute magnetic encoder to determine the shaft angle, and a 3-phase drive circuit to deliver current. With some pretty simple parts, I can something pretty close to actual torque control for the wheels of this robot.
@@ -13,9 +19,9 @@ I mostly rely on [SimpleFOC](https://simplefoc.com/) for the actual FOC implemen
 - For PCB design and electrical schematics, see `board_v2` subdirectory (which is a KiCad project).
 
 ## Diagram and Parts List
-(Note: this references a special-edition physically packaged version of this robot.)
+<img src="media/robot_with_part_annotations.png"/>
 
-<Picture of complete design>
+(Note: this references a special-edition physically packaged version of this robot.)
 
 Parts list:
 - 2X PLA wheel with TPU tire
@@ -46,8 +52,11 @@ Not included (supply seperately):
 Assembly is simple, but the tight packaging makes assembly pretty order-sensitive.
 
 1) Attach the motor assemblies onto the bottom of the case, as shown, using 4x M3x8mm hex bolts and nuts. Before you fully attach these, pass their wires into the case through the nearby holes; otherwise it'll be a tight fit to get those wires passed in, especially with the electronics board mounted. Be reasonably gentle with the wires...
+<img src="media/closeup_of_wires_inserted_without_board.jpg">
+
 2) Now install the main electronics board by sliding it into place and installing the 3x M2x8mm self-tapping phillips screws, which screw into posts on the PLA backplate. Note that you want the wires from the motor assemblies *over* the main board once it's installed -- it's a bit of dance to get it everything into place.
 3) Plug in the wires from the motor assemblies into the plugs on their corresponding side. See picture for exact orientation of wires -- carefully note the orientation of the 3-pin motor connectors! If you get this backwards, the motors will spin the wrong way. I recommend some good needlenose pliers to help with wrangling and attaching these cables.
+<img src="media/closeup_of_wheel_connectors_to_board.jpg">
 4) Attach the tires to the motors with at least 2x M2x4mm hex bolts each. These bolts should be snug but don't go ham (the PLA may not be able to take it).
 5) Slide the battery into the space under the on-off switch with the cables facing left, and plug in the cable, being careful to have the red wire on the right. *This board technically has reverse bias protection but I have never tested it and I do not want you to either.*
 
@@ -57,17 +66,13 @@ Troubleshooting: contact me!
 
 I packaged this robot with each motor and sensor already assembled, since their assembly is a bit sensitive, but you're welcome to disassemble and take a look. These assemblies are pancakes of a tiny BLDC motor ([Amazon link](https://www.amazon.com/DAUERHAFT-Brushless-Efficiency-Drones-Gimbal/dp/B08S5JSD3Q/ref=sr_1_4?crid=16NAYMQDO30CI&keywords=bldc+8605&qid=1686794765&sprefix=bldc+860%2Caps%2C130&sr=8-4), though this unit is much cheaper on Aliexpress) with a magnet superglued to its shaft, an [absolute magnetic encoder](https://www.amazon.com/Magnetic-Encoder-Induction-Measurement-Precision/dp/B094F8H591/ref=sr_1_2?crid=1PB3J5XDUXQNP&keywords=magnetic+encoder&qid=1686794826&sprefix=magnetic+encod%2Caps%2C122&sr=8-2) on a breakout board, and a thermistor sandwiched between them.
 
-<picture>
+<img src="media/motor_assembly_internals.jpg"/>
 
 ## Usage instructions
 
 Flip the switch to the right to turn on. I recommend laying the robot down or standing it on its head during startup; each wheel will independent move a quarter rotation back and forth during startup as a calibration routine (this is managed by SimpleFOC). Once that is done, the robot should be active, and will attempt to balance to the upright if it is within ~60 degrees of upright. The easiest way to get it going is to go to a clear area of floor, holding it sideways, and confidentally and quickly place it roughly upright and let go. The integrators reset and motors turn off again when it is not upright, e.g. if it falls.
 
-<gif of it working>
-
-I recently discovered another fun demo method that happens to work, despite the control algorithm not being created with this in mind: hold the robot by the wheels, and swing the robot upright. It should catch itself at the upright and stabilize there.
-
-<gif of this working>
+I recently discovered another fun demo method that happens to work, despite the control algorithm not being created with this in mind: hold the robot by the wheels, and swing the robot upright. It should catch itself at the upright and stabilize there. See [this video](media/flipup_demo.gif).
 
 Note: there's a few bugs somewhere in the code, especially in the BLE stuff, and sometimes the IMU or magnetic encoders get into weird states and stop talking. If the robot suddenly stops and falls over, or otherwise seems unresponsive, just do a complete power cycle. This is more likely to happen if you're using one of the BLE scripts, proportional to how much data you're sending/receiving.
 
