@@ -1,4 +1,6 @@
 # FallsDownLots
+<video src='https://github.com/gizatt/fallsdownlots/blob/master/media/cargo_demo.mp4' width=180></video>
+
 ## About
 This project ("FallsDownLots") is a 2-wheeled balancing robot designed around two brushless DC (BLDC) gimbal motors, controlled with field-oriented control. Previous iterations of wheeled balancing robots I've built have been plagued by issues with poor motor control (primarily backlash, inertia, and friction causing shaky control around the upright fixed point). This project instead uses a high-torque (specifically low KV / high winding count) 3-phase motor, paired with an absolute magnetic encoder to determine the shaft angle, and a 3-phase drive circuit to deliver current. With some pretty simple parts, I can something pretty close to actual torque control for the wheels of this robot.
 
@@ -17,7 +19,13 @@ I mostly rely on [SimpleFOC](https://simplefoc.com/) for the actual FOC implemen
 
 Parts list:
 - 2X PLA wheel with TPU tire
-- 2x Motor assembly
+- 2x Motor assembly, composed of...
+  - 1x PLA Wheel + TPU tire
+  - 1x PLA Motor Mount
+  - 1x AS5600 Breakout Board
+  - 1X 2204-260KV BLDC Motor (with 3-pin JST RE connector)
+  - 1X 10KOhm Thermistor
+  - 1X JST MX 6-pin Male Connector
 - 1x Altoid tin case with lid, containing...
   - 1x PLA board mounting backplate, already attached to case.
   - 1x Main electronics board
