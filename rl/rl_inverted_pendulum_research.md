@@ -11,17 +11,47 @@
 
 ---
 
+## Review Notes (2026-02-27)
+
+The five most important things to get right before training starts:
+
+1. **Torque scaling in the MJCF.** `gear=1` means ctrl=1.0 produces 1 Nm, which is 3-10x the real motor capability (0.1-0.3 Nm). Set `gear` to measured peak torque (e.g., 0.15) so the policy trains in a physically realistic torque regime. Otherwise the policy learns a control law that cannot transfer.
+
+2. **Use body-frame angular velocity, not world-frame.** `sim.py` reads `data.qvel[3:6]`, which is world-frame ang vel. The real IMU gives body-frame rates, and the `imu_gyro` sensor in the MJCF already provides body-frame data via `data.sensordata`. Both `sim.py` and the env cfg obs terms must use the sensor output (or equivalent body-frame projection) to avoid a sim-to-real mismatch.
+
+3. **World-frame vs body-frame linear velocity.** `sim.py` uses `data.qvel[0:2]` (world-frame x/y vel), but on the real robot x_vel is estimated from wheel encoders and y_vel is unobservable. The env cfg should either use encoder-derived velocity (wheel_vel * wheel_radius) or body-frame velocity to match what the firmware will provide.
+
+4. **Observation consistency between sim.py and env cfg.** `sim.py` constructs obs manually; the env cfg will construct them via mjlab's obs terms. These must produce identical obs vectors (same order, same frame, same normalization). Add a cross-check test once the env cfg is written.
+
+5. **`DEFAULT_HEIGHT` in sim.py is wrong** (0.065 instead of 0.085). The robot resets with wheels embedded in the floor. Fix before using sim.py for evaluation.
+
+---
+
 ## TODO
 
-- [ ] **Bootstrap** — clone mjlab_upkie to temp, copy scaffold into `rl/`, verify `import mjlab` works
-- [ ] **Robot model** — write `two_wheel.xml`, verify visually with `mujoco.viewer`
+- [x] **Bootstrap** — clone mjlab_upkie to temp, copy scaffold into `rl/`, verify `import mjlab` works
+- [x] **Robot model** — write `two_wheel.xml`, verify visually with `mujoco.viewer`
+  - Note: `mujoco.viewer` requires a display (GLX/EGL). In WSL2 headless, verified via physics sim instead. Run `uv run python -c "import mujoco, mujoco.viewer; m = mujoco.MjModel.from_xml_path('src/two_wheel_mjlab/robot/two_wheel/two_wheel.xml'); mujoco.viewer.launch(m, mujoco.MjData(m))"` on a machine with a display.
+- [ ] **Fix sim.py bugs** — before writing the env cfg:
+  - Fix `DEFAULT_HEIGHT` to 0.085 (currently 0.065, wheels spawn in floor)
+  - Switch angular velocity source from `data.qvel[3:6]` (world-frame) to `data.sensordata` for the `imu_gyro` sensor (body-frame)
+  - Replace `data.qvel[0:2]` (world-frame lin vel) with encoder-derived estimate (`wheel_vel * wheel_radius`) for x_vel, and 0.0 for y_vel (not observable on hardware)
+  - Fix `INF_PERIOD` comment (500 Hz / 4 = 125 Hz, not 50 Hz)
+- [ ] **Set MJCF torque scaling** — change `gear="1"` on both motors to measured peak torque (e.g., `gear="0.15"`), so ctrl=1.0 maps to real max torque. This makes the sim self-consistent and avoids needing external scaling everywhere.
+- [ ] **Add sensor data test** — verify `data.sensordata` returns expected values at rest (gyro ~0, framequat ~[1,0,0,0], wheel vels ~0)
+- [ ] **Add `onnx` to pyproject.toml dependencies** — sim.py imports it but it is not listed
 - [ ] **Env config** — write `balance_env_cfg.py`, register `TwoWheel-Balance-v0`
+  - Ensure obs terms produce the same vector as sim.py's `get_obs()` (same order, frame, and semantics)
+  - Use body-frame angular velocity and encoder-derived linear velocity in obs terms to match real hardware
+  - Consider switching from `integrator="RK4"` to `"Euler"` in the MJCF for training speed (RK4 is 4x cost, negligible accuracy gain for this system)
 - [ ] **Baseline training** — train without domain randomization, confirm episode length reaches 10s
 - [ ] **Visualization** — run `sim.py` on a trained checkpoint, visually confirm balancing
-- [ ] **Domain randomization** — add one parameter group at a time (friction → mass → damping → motor gain → IMU noise → action latency), retrain, confirm convergence each time
+- [ ] **Domain randomization** — add one parameter group at a time (friction -> mass -> damping -> motor gain -> IMU noise -> action latency), retrain, confirm convergence each time
+  - Action latency is the hardest to train through; add it last
 - [ ] **Weight export** — export weights + obs normalizer stats to `firmware/policy_weights.h` and `firmware/obs_norm.h`
 - [ ] **C++ validation** — cross-check Python and C++ inference numerically on a set of test inputs before touching hardware
 - [ ] **Arduino deployment** — flash, log raw IMU vs sim distributions, tune `MAX_TORQUE_NM`, enable RL policy
+  - Before enabling RL: log raw IMU while running PID controller, verify sign conventions and magnitude ranges match sim obs distributions
 
 ---
 
