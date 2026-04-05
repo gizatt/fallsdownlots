@@ -6,6 +6,7 @@ in both torque and velocity control modes, and saves the results to CSV.
 
 Usage:
     python scripts/sysid.py --port /dev/ttyACM0 [--out data/sysid_<timestamp>.csv]
+    python scripts/sysid.py --port COM5 [--out data/sysid_<timestamp>.csv]
 
 Each test sequence is appended to a single CSV file with a 'test' column
 identifying the run. Comment lines from the firmware (starting with #) are
@@ -95,13 +96,18 @@ class SerialReader:
 
 class SysIDBoard:
     def __init__(self, port: str, baud: int = 115200):
-        self._ser = serial.Serial(port, baud, timeout=1.0)
-        time.sleep(2.0)  # Wait for board reset after USB connect.
+        # dsrdtr=False, rtscts=False: prevent flow-control lines from
+        # toggling DTR and resetting the nRF52840 on connect (Windows issue).
+        self._ser = serial.Serial(
+            port, baud, timeout=1.0,
+            dsrdtr=False, rtscts=False,
+        )
+        time.sleep(2.0)  # Wait for board to be ready.
         self._ser.reset_input_buffer()
         self._reader = SerialReader(self._ser)
 
     def _send(self, cmd: str):
-        self._ser.write((cmd + "\n").encode("ascii"))
+        self._ser.write((cmd + "\r\n").encode("ascii"))
 
     def set_torque_mode(self):
         print("[host] -> torque mode")
