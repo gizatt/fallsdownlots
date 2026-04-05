@@ -89,13 +89,22 @@ void handle_command(const char *line) {
     motor.LPF_velocity.Tf = atof(line + 1);
     Serial.printf("# LPF Tf=%.4f\n", motor.LPF_velocity.Tf);
   } else if (line[0] == 'C') {
-    float amp, f0, f1, dur;
-    if (sscanf(line + 1, "%f,%f,%f,%f", &amp, &f0, &f1, &dur) == 4) {
-      start_chirp(amp, f0, f1, dur);
-      Serial.printf("# chirp amp=%.2f f0=%.2f f1=%.2f dur=%.2f\n", amp, f0, f1, dur);
-    } else {
-      Serial.println("# bad chirp args, expected C<amp>,<f0>,<f1>,<dur>");
-    }
+    // sscanf %f is unreliable on ARM Arduino; parse with strtof instead.
+    char *p = (char *)(line + 1);
+    char *end;
+    float amp = strtof(p, &end);
+    if (end == p || *end != ',') { Serial.println("# bad chirp args"); return; }
+    p = end + 1;
+    float f0 = strtof(p, &end);
+    if (end == p || *end != ',') { Serial.println("# bad chirp args"); return; }
+    p = end + 1;
+    float f1 = strtof(p, &end);
+    if (end == p || *end != ',') { Serial.println("# bad chirp args"); return; }
+    p = end + 1;
+    float dur = strtof(p, &end);
+    if (end == p)                { Serial.println("# bad chirp args"); return; }
+    start_chirp(amp, f0, f1, dur);
+    Serial.printf("# chirp amp=%.2f f0=%.2f f1=%.2f dur=%.2f\n", amp, f0, f1, dur);
   } else {
     Serial.printf("# unknown command: %s\n", line);
   }
