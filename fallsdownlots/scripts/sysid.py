@@ -27,12 +27,21 @@ Firmware must be flashed with the 'sysid' PlatformIO env.
 
 import argparse
 import csv
+import re
 import sys
 import threading
 import time
 from pathlib import Path
 
 import serial
+
+
+def normalize_port(port: str) -> str:
+    """Translate COM<N> -> /dev/ttyS<N> when running under WSL/Linux."""
+    m = re.fullmatch(r"COM(\d+)", port, re.IGNORECASE)
+    if m and sys.platform != "win32":
+        return f"/dev/ttyS{m.group(1)}"
+    return port
 
 # ---------------------------------------------------------------------------
 # Serial reader — runs in a background thread, buffers incoming data rows.
@@ -105,6 +114,20 @@ class SysIDBoard:
         time.sleep(2.0)  # Wait for board to be ready.
         self._ser.reset_input_buffer()
         self._reader = SerialReader(self._ser)
+
+    def wait_for_data(self, timeout: float = 10.0) -> bool:
+        """Block until data rows are flowing in, or timeout. Returns True if data arrived."""
+        print(f"[host] waiting for firmware data stream (timeout={timeout}s)...")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._reader._lock:
+                if self._reader._rows:
+                    rate_est = len(self._reader._rows)
+                    print(f"[host] receiving data ({rate_est} rows in first check). Firmware is live.")
+                    return True
+            time.sleep(0.2)
+        print("[host] ERROR: no data received from firmware. Is the sysid firmware flashed?")
+        return False
 
     def _send(self, cmd: str):
         self._ser.write((cmd + "\r\n").encode("ascii"))
@@ -232,9 +255,14 @@ def main():
         Path(f"sysid_{time.strftime('%Y%m%d_%H%M%S')}.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"[host] connecting to {args.port} ...")
-    board = SysIDBoard(args.port, args.baud)
+    port = normalize_port(args.port)
+    print(f"[host] connecting to {port} ...")
+    board = SysIDBoard(port, args.baud)
     print("[host] connected.")
+
+    if not board.wait_for_data():
+        board.close()
+        sys.exit(1)
 
     all_rows: list[dict] = []
 

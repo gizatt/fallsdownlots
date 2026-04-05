@@ -148,7 +148,6 @@ void setup() {
   motor.velocity_limit = 1000;
   motor.target = 0;
 
-  motor.useMonitoring(Serial);
   motor.init();
   motor.initFOC();
 
