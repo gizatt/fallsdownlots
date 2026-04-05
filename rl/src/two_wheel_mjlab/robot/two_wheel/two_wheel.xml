@@ -21,44 +21,54 @@
 
     <!--
       Chassis: represents the Altoids tin body + battery + electronics.
-      Dimensions (half-sizes): 30mm x 25mm x 50mm  (x=forward, y=lateral, z=up)
+      Altoids tin: 22mm deep x 65mm wide x 100mm tall  (x=depth, y=width, z=height)
+      Half-sizes: x=0.011, y=0.0325, z=0.050
       Total mass ~80g.
-      Positioned so wheels just touch the floor: chassis center at z = wheel_radius + chassis_half_z
-      wheel_radius = 0.035 m, chassis_half_z = 0.05 m  →  z = 0.085 m
-      But wheels attach at z=-0.05 (relative to chassis center), so center of wheel axle
-      is at z=0.035 from ground when chassis center is at z=0.085.
+      Wheel axle is 4mm up from tin bottom → axle at z = -0.046 relative to chassis center.
+      wheel_radius = 0.035 m  →  chassis center z = 0.035 + 0.046 = 0.081 m
     -->
-    <body name="chassis" pos="0 0 0.085">
+    <body name="chassis" pos="0 0 0.081">
       <freejoint name="chassis_free"/>
-      <geom name="chassis_box" type="box" size="0.030 0.025 0.050"
-            mass="0.080" rgba="0.70 0.45 0.20 1"/>
+      <!--
+        Total assembly mass: 172g.  Wheels assumed 20g each → chassis 132g.
+        Overall COM is 28mm from tin bottom = -22mm from chassis center.
+        Back-solving with wheels at z=-46mm: chassis COM at z=-14.7mm from chassis center.
+        Inertia computed for a uniform box at chassis center (close enough).
+        I_x=1.57e-4, I_y=1.15e-4, I_z=5.18e-5 kg·m² (x=depth, y=width, z=height)
+      -->
+      <inertial pos="0 0 -0.0147" mass="0.132"
+                diaginertia="1.57e-4 1.15e-4 5.18e-5"/>
+      <geom name="chassis_box" type="box" size="0.011 0.0325 0.050"
+            rgba="0.70 0.45 0.20 1"/>
       <!-- IMU site at chassis geometric center -->
       <site name="imu_site" pos="0 0 0" size="0.004"/>
 
       <!--
-        Left wheel: offset -y (left side), centered at chassis bottom face.
-        Wheel: r=35mm, half-width=8mm.  Hinge axis along +y (lateral).
+        Left wheel: offset -y (left side), axle 4mm above tin bottom.
+        Wheel: r=35mm, half-width=7.5mm.  Inside edge 41mm from center → center at y=-48.5mm.
+        Hinge axis along +y (lateral).
       -->
-      <body name="left_wheel" pos="0 -0.040 -0.050">
+      <body name="left_wheel" pos="0 -0.0485 -0.046">
         <!-- BLDC outrunner + ball bearings: near-zero passive friction.
              damping ~0.1 mNm·s/rad, armature = rotor inertia ~0.1 g·cm² -->
         <joint name="left_wheel_joint" type="hinge" axis="0 1 0"
                damping="0.0001" armature="0.0001"/>
         <!-- euler="1.5708 0 0" rotates cylinder axis from Z to Y, matching the hinge axis -->
-        <geom name="left_wheel_geom" type="cylinder" size="0.035 0.008"
+        <geom name="left_wheel_geom" type="cylinder" size="0.035 0.0075"
               euler="1.5708 0 0"
               mass="0.020" rgba="0.20 0.20 0.75 1"
               friction="1.2 0.01 0.002"/>
       </body>
 
       <!--
-        Right wheel: offset +y (right side).
+        Right wheel: offset +y (right side), axle 4mm above tin bottom.
+        Center at y=+48.5mm.
       -->
-      <body name="right_wheel" pos="0 0.040 -0.050">
+      <body name="right_wheel" pos="0 0.0485 -0.046">
         <joint name="right_wheel_joint" type="hinge" axis="0 1 0"
                damping="0.0001" armature="0.0001"/>
         <!-- euler="1.5708 0 0" rotates cylinder axis from Z to Y, matching the hinge axis -->
-        <geom name="right_wheel_geom" type="cylinder" size="0.035 0.008"
+        <geom name="right_wheel_geom" type="cylinder" size="0.035 0.0075"
               euler="1.5708 0 0"
               mass="0.020" rgba="0.20 0.20 0.75 1"
               friction="1.2 0.01 0.002"/>
@@ -68,15 +78,18 @@
 
   <actuator>
     <!--
-      Direct torque motors.  gear=1 means ctrl=1.0 → 1 Nm.
-      Measured SimpleFOC stall torque is ~0.1–0.3 Nm at the wheel shaft,
-      so the policy's [-1,1] output will be scaled by MAX_TORQUE_NM in sim.py
-      and firmware.  Keep gear=1 here and do all scaling externally.
+      Velocity-servo actuators.  ctrl = target wheel angular velocity [rad/s].
+      kv is the velocity gain: torque = kv * (ctrl - joint_vel)  [Nm/(rad/s)].
+      forcerange clips the resulting torque to the motor stall limit (~0.3 Nm).
+      ctrlrange limits commanded velocity; ±50 rad/s ≈ ±1.75 m/s at the wheel.
+      (Inspired by upkie: kv="0.05" forcerange="-1.7 1.7"; scaled down for this robot.)
     -->
-    <motor name="left_motor"  joint="left_wheel_joint"
-           ctrllimited="true" ctrlrange="-1.0 1.0" gear="1"/>
-    <motor name="right_motor" joint="right_wheel_joint"
-           ctrllimited="true" ctrlrange="-1.0 1.0" gear="1"/>
+    <velocity name="left_motor"  joint="left_wheel_joint"
+              kv="0.05" forcerange="-0.3 0.3"
+              ctrllimited="true" ctrlrange="-50 50"/>
+    <velocity name="right_motor" joint="right_wheel_joint"
+              kv="0.05" forcerange="-0.3 0.3"
+              ctrllimited="true" ctrlrange="-50 50"/>
   </actuator>
 
   <sensor>
