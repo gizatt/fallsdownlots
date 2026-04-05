@@ -35,6 +35,11 @@ enum Mode { TORQUE, VELOCITY };
 Mode mode = TORQUE;
 float target = 0.0;
 
+// Back-EMF feedforward gain (V·s/rad).
+// Derived from motor KV: Kb = 60 / (2π × KV_rpm_per_volt).
+// Set to 0 to disable.
+float Kb = 60.0f / (TWO_PI * 450.0f);  // ≈ 0.0212 V·s/rad
+
 // Chirp state.
 bool chirp_active = false;
 float chirp_amp = 0.0;
@@ -105,6 +110,9 @@ void handle_command(const char *line) {
     if (end == p)                { Serial.println("# bad chirp args"); return; }
     start_chirp(amp, f0, f1, dur);
     Serial.printf("# chirp amp=%.2f f0=%.2f f1=%.2f dur=%.2f\n", amp, f0, f1, dur);
+  } else if (line[0] == 'B') {
+    Kb = atof(line + 1);
+    Serial.printf("# Kb=%.5f V·s/rad (set to 0 to disable feedforward)\n", Kb);
   } else {
     Serial.printf("# unknown command: %s\n", line);
   }
@@ -152,7 +160,7 @@ void setup() {
   motor.PID_velocity.I = 5.0;
   motor.PID_velocity.D = 0.001;
   motor.PID_velocity.output_ramp = 1000;
-  motor.LPF_velocity.Tf = 0.02;  // 20ms — tighter than the balancer's 100ms.
+  motor.LPF_velocity.Tf = 0.005;  // 5ms (~32 Hz corner) — reduced from 20ms to cut observation lag.
 
   motor.velocity_limit = 1000;
   motor.target = 0;
@@ -160,7 +168,7 @@ void setup() {
   motor.init();
   motor.initFOC();
 
-  Serial.println("# sysid ready. Commands: T<val> M<0|1> P I D F C<amp,f0,f1,dur>");
+  Serial.println("# sysid ready. Commands: T<val> M<0|1> P I D F B<Kb> C<amp,f0,f1,dur>");
 }
 
 uint32_t last_loop_us = 0;
@@ -190,9 +198,16 @@ void loop() {
     }
   }
 
-  motor.move(target);
+  // Back-EMF feedforward in torque mode: adds Kb*ω to compensate for
+  // speed-dependent voltage drop, making voltage→torque more linear.
+  float v_applied = target;
+  if (mode == TORQUE) {
+    v_applied += Kb * motor.shaftVelocity();
+  }
+  motor.move(v_applied);
 
-  // Stream data.
+  // Stream the raw target (not v_applied) so the sysID analysis sees the
+  // commanded "torque proxy" as the input, not the FF-compensated voltage.
   Serial.printf("%lu,%.5f,%.4f,%.4f\n",
     t,
     as5600.getAngle(),
