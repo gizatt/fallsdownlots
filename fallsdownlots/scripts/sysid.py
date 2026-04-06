@@ -218,6 +218,94 @@ class SysIDBoard:
             r["step_target"] = float("nan")
         return rows
 
+    def calibrate_zero(self, voltage: float = 2.0) -> dict | None:
+        """
+        Run the Z command: open-loop phase voltage at 4 cardinal electrical angles,
+        parse the firmware's implied_zero measurements, and return a dict with:
+            zero_electric_angle  float  (radians) — pass to motor.initFOC()
+            direction            str    "CW" or "CCW"
+            measurements         list of dicts per cardinal angle
+        Returns None on failure (no measurements received).
+        """
+        print(f"[host] -> zero calibration  voltage={voltage:.2f} V  (~{4 * 0.7:.1f}s)")
+
+        # Intercept comment lines during calibration — SerialReader already prints
+        # them, but we also need to capture the structured ones.
+        measurements = []
+        zero_angle = None
+        direction = None
+
+        # Patch the reader to capture zero_meas lines.
+        import queue
+        cal_q: queue.Queue[str] = queue.Queue()
+        orig_run = self._reader._run
+
+        # We'll just poll the serial port directly here for the duration, since
+        # the calibration takes a fixed known time and pauses normal streaming.
+        total_wait = 4 * 0.7 + 0.5   # 4 angles × 700ms hold + slack
+        self._ser.write((f"Z{voltage:.2f}\r\n").encode("ascii"))
+
+        deadline = time.monotonic() + total_wait + 5.0
+        while time.monotonic() < deadline:
+            try:
+                raw = self._ser.readline()
+            except Exception:
+                break
+            if not raw:
+                continue
+            line = raw.decode("ascii", errors="replace").strip()
+            if line.startswith("#"):
+                msg = line[1:].strip()
+                print(f"[fw] {msg}")
+                # Parse: zero_meas: cmd_elec=X mech=Y elec_meas=Z implied_zero=W
+                if "zero_meas:" in msg:
+                    parts = {}
+                    for token in msg.split("zero_meas:")[1].split():
+                        k, _, v = token.partition("=")
+                        try:
+                            parts[k] = float(v)
+                        except ValueError:
+                            pass
+                    if "implied_zero" in parts:
+                        measurements.append(parts)
+                # Parse: zero_cal result: zero_electric_angle=X  direction=Y
+                elif "zero_cal result:" in msg:
+                    for token in msg.split("zero_cal result:")[1].split():
+                        k, _, v = token.partition("=")
+                        if k == "zero_electric_angle":
+                            try:
+                                zero_angle = float(v)
+                            except ValueError:
+                                pass
+                        elif k == "direction":
+                            direction = v.strip()
+                    break  # Done.
+            # Non-comment lines are normal streaming rows; ignore during cal.
+
+        if zero_angle is None or not measurements:
+            print("[host] ERROR: zero calibration failed — no result received.")
+            return None
+
+        print(f"\n[host] === Zero calibration result ===")
+        print(f"[host]   zero_electric_angle = {zero_angle:.5f} rad")
+        print(f"[host]   direction           = {direction}")
+        print(f"[host]   ({len(measurements)} measurements, std = "
+              f"{self._circular_std([m['implied_zero'] for m in measurements]):.4f} rad)")
+        print(f"[host] Paste into initFOC:")
+        print(f"[host]   motor.initFOC({zero_angle:.5f}f, Direction::{direction});")
+        print()
+
+        return {"zero_electric_angle": zero_angle, "direction": direction,
+                "measurements": measurements}
+
+    @staticmethod
+    def _circular_std(angles: list[float]) -> float:
+        import math
+        s = sum(math.sin(a) for a in angles)
+        c = sum(math.cos(a) for a in angles)
+        r = math.sqrt(s*s + c*c) / len(angles)
+        return math.sqrt(-2 * math.log(max(r, 1e-9)))
+
     def close(self):
         self._reader.stop()
         self._ser.close()
@@ -249,16 +337,27 @@ def main():
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--out", default=None,
                         help="Output CSV path. Defaults to sysid_<timestamp>.csv")
+    parser.add_argument("--calibrate-zero", action="store_true",
+                        help="Run electrical zero calibration only (Z command), then exit.")
+    parser.add_argument("--cal-voltage", type=float, default=2.0,
+                        help="Open-loop voltage to use during zero calibration (default 2.0 V).")
     args = parser.parse_args()
-
-    out_path = Path(args.out) if args.out else \
-        Path(f"sysid_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     port = normalize_port(args.port)
     print(f"[host] connecting to {port} ...")
     board = SysIDBoard(port, args.baud)
     print("[host] connected.")
+
+    if args.calibrate_zero:
+        try:
+            board.calibrate_zero(voltage=args.cal_voltage)
+        finally:
+            board.close()
+        return
+
+    out_path = Path(args.out) if args.out else \
+        Path(f"sysid_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not board.wait_for_data():
         board.close()
