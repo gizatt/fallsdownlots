@@ -369,43 +369,43 @@ def main():
         # ------------------------------------------------------------------
         # Torque (voltage) mode
         # ------------------------------------------------------------------
-        board.set_torque_mode()
-        time.sleep(0.5)
+        # board.set_torque_mode()
+        # time.sleep(0.5)
 
-        all_rows += board.run_step_test(
-            amplitudes=[0.5, 1.0, 2.0, 3.5],
-            on_duration=2.0,
-            settle_duration=1.0,
-            test_label="torque_steps",
-        )
+        # all_rows += board.run_step_test(
+        #     amplitudes=[0.5, 1.0, 2.0, 3.5],
+        #     on_duration=2.0,
+        #     settle_duration=1.0,
+        #     test_label="torque_steps",
+        # )
 
-        all_rows += board.run_coastdown_test(
-            drive_val=3.5,
-            drive_duration=2.0,
-            coast_duration=3.0,
-            test_label="torque_coastdown",
-        )
+        # all_rows += board.run_coastdown_test(
+        #     drive_val=3.5,
+        #     drive_duration=2.0,
+        #     coast_duration=3.0,
+        #     test_label="torque_coastdown",
+        # )
 
-        all_rows += board.run_chirp_test(
-            amp=3.0, f0=0.2, f1=80.0, dur=40.0,
-            test_label="torque_chirp",
-        )
+        # all_rows += board.run_chirp_test(
+        #     amp=3.0, f0=0.2, f1=80.0, dur=40.0,
+        #     test_label="torque_chirp",
+        # )
 
         # ------------------------------------------------------------------
         # Velocity mode
         # ------------------------------------------------------------------
-        board.set_velocity_mode(P=0.25, I=5.0, D=0.001, Tf=0.02)
+        board.set_velocity_mode(P=0.03, I=1, D=0.0, Tf=0.01)
         time.sleep(0.5)
 
         all_rows += board.run_step_test(
-            amplitudes=[5.0, 10.0, 20.0, 40.0],
-            on_duration=2.0,
+            amplitudes=[2.5, 5.0, 8.0, 10.0, 20.0, 40.0, 80.0],
+            on_duration=5.0,
             settle_duration=1.0,
             test_label="velocity_steps",
         )
 
         all_rows += board.run_coastdown_test(
-            drive_val=30.0,
+            drive_val=80.0,
             drive_duration=2.0,
             coast_duration=3.0,
             test_label="velocity_coastdown",
