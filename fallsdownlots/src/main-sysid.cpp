@@ -16,11 +16,7 @@
  *     F<float>               Velocity LPF time constant (seconds).
  *     C<amp>,<f0>,<f1>,<dur> Start log-chirp. Firmware generates the signal.
  *                            amp in same units as T. f0/f1 in Hz. dur in seconds.
- *     Z<voltage>             Electrical zero calibration. Applies open-loop phase
- *                            voltage at 4 cardinal angles, reads AS5600, reports
- *                            implied zero_electric_angle and sensor direction via
- *                            # zero_meas: and # zero_cal result: comment lines.
- *
+ * *
  *   Board -> Python (CSV at loop rate, ~500-1000 Hz depending on I2C):
  *     <t_us>,<angle_rad>,<vel_rad_s>,<cmd>\n
  *
@@ -116,117 +112,6 @@ void handle_command(const char *line) {
   } else if (line[0] == 'B') {
     Kb = atof(line + 1);
     Serial.printf("# Kb=%.5f V·s/rad (set to 0 to disable feedforward)\n", Kb);
-  } else if (line[0] == 'Z') {
-    // Electrical zero calibration.
-    // Bypasses SimpleFOC's FOC loop: sweeps the rotor to a consistent starting
-    // position, then applies open-loop phase voltage at 12 evenly-spaced
-    // electrical angles over 2 full revolutions (0..4π), reads the AS5600 at
-    // each, and circularly averages the implied zero_electric_angle.
-    // Spanning 2 periods + consistent approach direction averages out cogging.
-    float cal_voltage = atof(line + 1);
-    if (cal_voltage <= 0.0f || cal_voltage > 5.0f) cal_voltage = 2.0f;
-
-    // Stop normal control.
-    bool was_chirp = chirp_active;
-    chirp_active = false;
-    motor.move(0);
-    motor.controller = MotionControlType::torque;
-
-    Serial.printf("# zero_cal: voltage=%.2f V, hold=600ms per angle\n", cal_voltage);
-
-    // Pre-conditioning: sweep through 2 full electrical revolutions (0→4π) in
-    // small steps so the rotor arrives at angle 0 from a consistent direction.
-    // This ensures we always approach the first measurement from the same side,
-    // landing in the same cogging notch regardless of starting position.
-    {
-      const int precon_steps = 80;  // 80 steps over 4π ≈ 0.157 rad/step electrical
-      for (int i = 0; i <= precon_steps; i++) {
-        float angle = (4.0f * _PI * i) / precon_steps;
-        motor.setPhaseVoltage(cal_voltage, 0, angle);
-        delay(25);
-      }
-      // Settle at 0 after the sweep.
-      for (int t = 0; t < 400; t++) {
-        motor.setPhaseVoltage(cal_voltage, 0, 0.0f);
-        delay(1);
-      }
-    }
-
-    // Measure at 12 evenly-spaced angles over 2 full electrical revolutions
-    // (0 to 4π, exclusive of the duplicate endpoint).  More points + spanning
-    // multiple periods averages out cogging notch bias.
-    const int n_angles = 12;
-    float implied_zeros[n_angles];
-    float mech_angles[n_angles];
-
-    for (int i = 0; i < n_angles; i++) {
-      // Approach each angle from slightly below (consistent direction) to
-      // always land in the same cogging notch.
-      float cmd = (4.0f * _PI * i) / n_angles;  // 0, π/3, 2π/3, …, 11π/3
-      float approach = cmd - 0.3f;              // step back ~0.3 rad
-      for (int t = 0; t < 150; t++) {
-        motor.setPhaseVoltage(cal_voltage, 0, approach);
-        delay(1);
-      }
-      // Now advance to the target angle and hold.
-      for (int t = 0; t < 600; t++) {
-        motor.setPhaseVoltage(cal_voltage, 0, cmd);
-        delay(1);
-      }
-
-      // Read settled mechanical angle.
-      as5600.update();
-      float mech = as5600.getAngle();  // radians, cumulative
-      mech_angles[i] = mech;
-
-      // Wrap mechanical angle to [0, 2π) electrical.
-      // electrical = mech * n_pole_pairs  (mod 2π)
-      float elec_measured = fmod(mech * (float)motor.pole_pairs, _2PI);
-      if (elec_measured < 0) elec_measured += _2PI;
-
-      // Implied zero: how much must we subtract from raw electrical angle
-      // to match the commanded angle?  Wrap cmd to [0, 2π) first.
-      float cmd_wrapped = fmod(cmd, _2PI);
-      if (cmd_wrapped < 0) cmd_wrapped += _2PI;
-      float implied = cmd_wrapped - elec_measured;
-      // Wrap to (-π, π].
-      while (implied >  _PI) implied -= _2PI;
-      while (implied < -_PI) implied += _2PI;
-      implied_zeros[i] = implied;
-
-      Serial.printf("# zero_meas: cmd_elec=%.4f mech=%.4f elec_meas=%.4f implied_zero=%.4f\n",
-                    cmd_wrapped, mech, elec_measured, implied);
-    }
-
-    // Disable motor.
-    motor.setPhaseVoltage(0, 0, 0);
-
-    // Average implied zeros using circular mean to handle wrap-around.
-    float sin_sum = 0, cos_sum = 0;
-    for (int i = 0; i < n_angles; i++) {
-      sin_sum += sinf(implied_zeros[i]);
-      cos_sum += cosf(implied_zeros[i]);
-    }
-    float zero_avg = atan2f(sin_sum, cos_sum);
-
-    // Sensor direction: if mech angle increases when cmd angle increases,
-    // the sensor reads in the same direction as the electrical angle → CW.
-    // Use a linear regression slope over all points for robustness.
-    float mech_slope = mech_angles[n_angles - 1] - mech_angles[0];
-    bool sensor_cw = mech_slope > 0;
-
-    Serial.printf("# zero_cal result: zero_electric_angle=%.5f  direction=%s\n",
-                  zero_avg, sensor_cw ? "CW" : "CCW");
-    Serial.printf("# Paste into initFOC: motor.initFOC(%.5ff, Direction::%s);\n",
-                  zero_avg, sensor_cw ? "CW" : "CCW");
-
-    // Restore mode.
-    if (was_chirp) {
-      // Don't restart chirp; just return to torque idle.
-    }
-    mode = TORQUE;
-    target = 0.0;
-    motor.controller = MotionControlType::torque;
   } else {
     Serial.printf("# unknown command: %s\n", line);
   }
@@ -288,7 +173,7 @@ void setup() {
   // motor.zero_electric_angle = -0.19892f;  // measured 2025-xx-xx
   // motor.sensor_direction = Direction::CW;  // measured 2025-xx-xx
 
-  Serial.println("# sysid ready. Commands: T<val> M<0|1> P I D F B<Kb> C<amp,f0,f1,dur> Z<voltage>");
+  Serial.println("# sysid ready. Commands: T<val> M<0|1> P I D F B<Kb> C<amp,f0,f1,dur>");
 }
 
 uint32_t last_loop_us = 0;
