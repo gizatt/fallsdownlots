@@ -222,60 +222,64 @@ class SysIDBoard:
             r["step_target"] = float("nan")
         return rows
 
-    def run_calibration(
+    def run_ecc_calibration(
         self,
-        ecc_voltage: float = 3.0,
-        ecc_duration: float = 8.0,
-        cogging_voltage: float = 0.8,
-        cogging_duration: float = 12.0,
+        voltage: float = 3.0,
+        duration: float = 8.0,
     ) -> list[dict]:
         """
-        Two-phase open-loop calibration in torque mode.
+        Phase 1 — eccentricity calibration.
 
-        Phase 1 — eccentricity: spin at ecc_voltage for ecc_duration seconds.
-          High enough speed that cogging averages out; detrending the angle ramp
-          reveals the AS5600 eccentricity error as a sinusoid at 1× mechanical.
+        Spin at a high-ish open-loop torque voltage so the motor moves fast
+        enough that cogging averages out.  Detrending the angle ramp reveals
+        the AS5600 eccentricity error as a sinusoid at 1× mechanical.
 
-        Phase 2 — cogging: spin at cogging_voltage for cogging_duration seconds.
-          Low speed so cogging dominates velocity ripple.  With eccentricity
-          corrected in post, velocity vs corrected electrical angle gives the
-          cogging profile.
-
-        Returns rows tagged test="eccentricity_cal" / "cogging_cal" for the
-        standard sysid CSV; analyse with plot_sysid.py --calibrate.
+        After running, feed the printed ECC_A / ECC_PHI into the firmware
+        calibration block in main-sysid.cpp / main-fallsdownlots.cpp and
+        reflash before running phase 2.
         """
-        rows = []
         self.set_torque_mode()
         time.sleep(0.2)
-
-        # Phase 1: eccentricity.
-        print(f"[host] -> eccentricity cal  voltage={ecc_voltage:.2f} V  dur={ecc_duration:.1f}s")
+        print(f"[host] -> phase 1: eccentricity cal  voltage={voltage:.2f} V  dur={duration:.1f}s")
         self._reader.flush()
-        self.set_target(ecc_voltage)
-        time.sleep(ecc_duration)
+        self.set_target(voltage)
+        time.sleep(duration)
         self.set_target(0.0)
-        chunk = self._reader.collect()
-        for r in chunk:
+        rows = self._reader.collect()
+        for r in rows:
             r["test"] = "eccentricity_cal"
-            r["step_target"] = ecc_voltage
-        print(f"[host]   collected {len(chunk)} rows")
-        rows.extend(chunk)
+            r["step_target"] = voltage
+        print(f"[host]   collected {len(rows)} rows")
+        return rows
 
-        time.sleep(1.5)  # let rotor settle before low-speed phase
+    def run_cogging_calibration(
+        self,
+        voltage: float = 0.3,
+        duration: float = 15.0,
+    ) -> list[dict]:
+        """
+        Phase 2 — cogging + ezero calibration.
 
-        # Phase 2: cogging.
-        print(f"[host] -> cogging cal  voltage={cogging_voltage:.2f} V  dur={cogging_duration:.1f}s")
+        Requires eccentricity correction already flashed into firmware.
+        Spin at a low open-loop torque voltage so the motor moves slowly
+        and cogging dominates the velocity ripple.  plot_sysid.py bins
+        velocity vs corrected electrical angle to reveal the cogging profile.
+
+        initFOC runs at firmware boot with the corrected sensor, so the
+        zero_electric_angle printed at startup is the ezero to use.
+        """
+        self.set_torque_mode()
+        time.sleep(0.2)
+        print(f"[host] -> phase 2: cogging cal  voltage={voltage:.2f} V  dur={duration:.1f}s")
         self._reader.flush()
-        self.set_target(cogging_voltage)
-        time.sleep(cogging_duration)
+        self.set_target(voltage)
+        time.sleep(duration)
         self.set_target(0.0)
-        chunk = self._reader.collect()
-        for r in chunk:
+        rows = self._reader.collect()
+        for r in rows:
             r["test"] = "cogging_cal"
-            r["step_target"] = cogging_voltage
-        print(f"[host]   collected {len(chunk)} rows")
-        rows.extend(chunk)
-
+            r["step_target"] = voltage
+        print(f"[host]   collected {len(rows)} rows")
         return rows
 
     def close(self):
@@ -309,12 +313,17 @@ def main():
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--out", default=None,
                         help="Output CSV path. Defaults to sysid_<timestamp>.csv")
-    parser.add_argument("--calibrate", action="store_true",
-                        help="Run two-phase calibration (eccentricity + cogging), save CSV, then exit.")
+    cal_group = parser.add_mutually_exclusive_group()
+    cal_group.add_argument("--calibrate-ecc", action="store_true",
+                           help="Phase 1: eccentricity calibration (high-speed torque spin). "
+                                "Fit ECC_A/ECC_PHI, paste into firmware, reflash, then run --calibrate-cogging.")
+    cal_group.add_argument("--calibrate-cogging", action="store_true",
+                           help="Phase 2: cogging calibration (low-speed torque spin). "
+                                "Requires eccentricity correction already in firmware.")
     parser.add_argument("--ecc-voltage", type=float, default=3.0,
-                        help="Torque voltage for eccentricity phase (default 3.0 V).")
-    parser.add_argument("--cogging-voltage", type=float, default=0.8,
-                        help="Torque voltage for cogging phase (default 0.8 V).")
+                        help="Open-loop voltage for eccentricity phase (default 3.0 V).")
+    parser.add_argument("--cogging-voltage", type=float, default=0.3,
+                        help="Open-loop voltage for cogging phase (default 0.3 V).")
     args = parser.parse_args()
 
     port = normalize_port(args.port)
@@ -322,19 +331,22 @@ def main():
     board = SysIDBoard(port, args.baud)
     print("[host] connected.")
 
-    if args.calibrate:
+    if args.calibrate_ecc or args.calibrate_cogging:
         out_path = Path(args.out) if args.out else \
             Path(f"cal_{time.strftime('%Y%m%d_%H%M%S')}.csv")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            rows = board.run_calibration(
-                ecc_voltage=args.ecc_voltage,
-                cogging_voltage=args.cogging_voltage,
-            )
+            if args.calibrate_ecc:
+                rows = board.run_ecc_calibration(voltage=args.ecc_voltage)
+                print(f"\n[host] Analyse with: uv run scripts/plot_sysid.py {out_path}")
+                print(f"[host] Then paste ECC_A / ECC_PHI into firmware and reflash.")
+                print(f"[host] Then run: python scripts/sysid.py --port <port> --calibrate-cogging")
+            else:
+                rows = board.run_cogging_calibration(voltage=args.cogging_voltage)
+                print(f"\n[host] Analyse with: uv run scripts/plot_sysid.py {out_path}")
         finally:
             board.close()
         save_rows(rows, out_path)
-        print(f"[host] calibration done. Run: uv run scripts/plot_sysid.py --calibrate {out_path}")
         return
 
     out_path = Path(args.out) if args.out else \

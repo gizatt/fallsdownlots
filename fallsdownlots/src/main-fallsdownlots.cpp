@@ -7,7 +7,31 @@
 #include "BLEManager.hpp"
 #include "ThermistorManager.hpp"
 
-MagneticSensorI2C as5600_r = MagneticSensorI2C(AS5600_I2C);
+// ============================================================
+// Motor calibration constants
+// Run `python scripts/sysid.py --calibrate-ecc`  to measure eccentricity,
+// then update ECC_A / ECC_PHI below and reflash.
+// Run `python scripts/sysid.py --calibrate-cogging` afterwards to
+// characterise cogging with the corrected sensor.
+// ============================================================
+static constexpr float MOTOR_R_ECC_A   = 0.0f;  // eccentricity amplitude (rad)
+static constexpr float MOTOR_R_ECC_PHI = 0.0f;  // eccentricity phase     (rad)
+static constexpr float MOTOR_L_ECC_A   = 0.0f;
+static constexpr float MOTOR_L_ECC_PHI = 0.0f;
+
+// AS5600 wrapper that applies eccentricity correction at the sensor level.
+// SimpleFOC calls getSensorAngle() to drive FOC, velocity estimation, and
+// initFOC zero-cal — correcting here means all of those see a clean angle.
+struct CorrectedAS5600 : public MagneticSensorI2C {
+  float A = 0.0f, phi = 0.0f;
+  CorrectedAS5600() : MagneticSensorI2C(AS5600_I2C) {}
+  float getSensorAngle() override {
+    float raw = MagneticSensorI2C::getSensorAngle();
+    return raw - A * sinf(raw + phi);
+  }
+};
+
+CorrectedAS5600 as5600_r;
 TwoWire &Wire_r = Wire;
 BLDCMotor motor_r = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_r = BLDCDriver3PWM(6, 9, 10, 5);
@@ -16,7 +40,7 @@ const int MOTOR_R_THERMISTOR_WRITE_PIN = A4;
 const float MOTOR_R_THERMISTOR_R_DIVIDER = 1000; // ohms
 const float MOTOR_THERMISTOR_LOWPASS_RC = 0.5;
 
-MagneticSensorI2C as5600_l = MagneticSensorI2C(AS5600_I2C);
+CorrectedAS5600 as5600_l;
 TwoWire Wire_l(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, 24, 25);
 BLDCMotor motor_l = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_l = BLDCDriver3PWM(12, 13, 26, 11);
@@ -130,8 +154,12 @@ void setup()
   blueart_packet_serial.setPacketHandler(&onBLEPacketReceived);
   last_received_ble_packet_millis = millis();
 
-  // Initialize magnetic encoders.
+  // Initialize magnetic encoders and apply eccentricity correction.
+  as5600_r.A   = MOTOR_R_ECC_A;
+  as5600_r.phi = MOTOR_R_ECC_PHI;
   as5600_r.init(&Wire_r);
+  as5600_l.A   = MOTOR_L_ECC_A;
+  as5600_l.phi = MOTOR_L_ECC_PHI;
   as5600_l.init(&Wire_l);
 
   Serial.println("AS5600 ready");

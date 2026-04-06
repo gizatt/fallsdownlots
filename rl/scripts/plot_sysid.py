@@ -526,6 +526,9 @@ def figure_sensor_eccentricity(df: pd.DataFrame):
                          label=f"fit: A={A*1000:.1f} mrad, φ={np.degrees(phi):.1f}°")
             print(f"[eccentricity] {label}: rms={rms*1000:.2f} mrad  "
                   f"fit A={A*1000:.2f} mrad  phi={np.degrees(phi):.1f}°")
+            print(f"[eccentricity] Paste into firmware calibration block:")
+            print(f"[eccentricity]   MOTOR_ECC_A   = {A:.5f}f;")
+            print(f"[eccentricity]   MOTOR_ECC_PHI = {phi:.5f}f;")
         else:
             print(f"[eccentricity] {label}: rms={rms*1000:.2f} mrad  fit failed")
 

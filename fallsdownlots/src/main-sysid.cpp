@@ -25,8 +25,28 @@
 
 #include <SimpleFOC.h>
 
+// ============================================================
+// Motor calibration constants
+// 1. Run `python scripts/sysid.py --calibrate-ecc` to measure eccentricity.
+//    Paste the printed ECC_A / ECC_PHI values below and reflash.
+// 2. Run `python scripts/sysid.py --calibrate-cogging` to characterise
+//    cogging with the corrected sensor (and capture initFOC's ezero).
+// ============================================================
+static constexpr float MOTOR_ECC_A   = 0.0f;  // eccentricity amplitude (rad)
+static constexpr float MOTOR_ECC_PHI = 0.0f;  // eccentricity phase     (rad)
+
+// AS5600 wrapper that applies eccentricity correction at the sensor level.
+struct CorrectedAS5600 : public MagneticSensorI2C {
+  float A = 0.0f, phi = 0.0f;
+  CorrectedAS5600() : MagneticSensorI2C(AS5600_I2C) {}
+  float getSensorAngle() override {
+    float raw = MagneticSensorI2C::getSensorAngle();
+    return raw - A * sinf(raw + phi);
+  }
+};
+
 // Right motor hardware (matches main-fallsdownlots.cpp).
-MagneticSensorI2C as5600 = MagneticSensorI2C(AS5600_I2C);
+CorrectedAS5600 as5600;
 BLDCMotor motor = BLDCMotor(7, 12.0, 450);
 BLDCDriver3PWM driver = BLDCDriver3PWM(6, 9, 10, 5);
 
@@ -142,6 +162,8 @@ void setup() {
   Wire.setClock(400000);
   Wire.begin();
 
+  as5600.A   = MOTOR_ECC_A;
+  as5600.phi = MOTOR_ECC_PHI;
   as5600.init(&Wire);
 
   driver.voltage_power_supply = 7.4;
