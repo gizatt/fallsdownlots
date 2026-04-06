@@ -231,7 +231,9 @@ class SysIDBoard:
             measurements         list of dicts per cardinal angle
         Returns None on failure (no measurements received).
         """
-        print(f"[host] -> zero calibration  voltage={voltage:.2f} V  (~{4 * 0.7:.1f}s)")
+        # Firmware timing: ~2.4s precon sweep + 12 × (150ms approach + 600ms hold) ≈ 11.4s.
+        est_seconds = 2.4 + 12 * 0.75
+        print(f"[host] -> zero calibration  voltage={voltage:.2f} V  (~{est_seconds:.0f}s)")
 
         measurements = []
         zero_angle = None
@@ -243,9 +245,8 @@ class SysIDBoard:
 
         self._send(f"Z{voltage:.2f}")
 
-        # SerialReader owns the port — read comment lines via its queue.
-        # Firmware takes 600ms per angle + 100ms gap × 4 + a little slack.
-        total_wait = 4 * 0.8 + 2.0
+        # Loop exits as soon as "zero_cal result:" arrives; deadline is a safety net.
+        total_wait = est_seconds + 5.0
         deadline = time.monotonic() + total_wait
         while time.monotonic() < deadline:
             try:
