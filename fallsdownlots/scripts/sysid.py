@@ -33,6 +33,7 @@ import threading
 import time
 from pathlib import Path
 
+import queue
 import serial
 
 
@@ -53,6 +54,7 @@ class SerialReader:
         self._rows: list[dict] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._comment_queue: queue.Queue[str] = queue.Queue()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -64,7 +66,9 @@ class SerialReader:
                     continue
                 line = raw.decode("ascii", errors="replace").strip()
                 if line.startswith("#"):
-                    print(f"[fw] {line[1:].strip()}")
+                    msg = line[1:].strip()
+                    print(f"[fw] {msg}")
+                    self._comment_queue.put(msg)
                     continue
                 parts = line.split(",")
                 if len(parts) != 4:
@@ -229,58 +233,49 @@ class SysIDBoard:
         """
         print(f"[host] -> zero calibration  voltage={voltage:.2f} V  (~{4 * 0.7:.1f}s)")
 
-        # Intercept comment lines during calibration — SerialReader already prints
-        # them, but we also need to capture the structured ones.
         measurements = []
         zero_angle = None
         direction = None
 
-        # Patch the reader to capture zero_meas lines.
-        import queue
-        cal_q: queue.Queue[str] = queue.Queue()
-        orig_run = self._reader._run
+        # Drain any stale comment lines that arrived before this call.
+        while not self._reader._comment_queue.empty():
+            self._reader._comment_queue.get_nowait()
 
-        # We'll just poll the serial port directly here for the duration, since
-        # the calibration takes a fixed known time and pauses normal streaming.
-        total_wait = 4 * 0.7 + 0.5   # 4 angles × 700ms hold + slack
-        self._ser.write((f"Z{voltage:.2f}\r\n").encode("ascii"))
+        self._send(f"Z{voltage:.2f}")
 
-        deadline = time.monotonic() + total_wait + 5.0
+        # SerialReader owns the port — read comment lines via its queue.
+        # Firmware takes 600ms per angle + 100ms gap × 4 + a little slack.
+        total_wait = 4 * 0.8 + 2.0
+        deadline = time.monotonic() + total_wait
         while time.monotonic() < deadline:
             try:
-                raw = self._ser.readline()
-            except Exception:
-                break
-            if not raw:
+                msg = self._reader._comment_queue.get(timeout=0.2)
+            except queue.Empty:
                 continue
-            line = raw.decode("ascii", errors="replace").strip()
-            if line.startswith("#"):
-                msg = line[1:].strip()
-                print(f"[fw] {msg}")
-                # Parse: zero_meas: cmd_elec=X mech=Y elec_meas=Z implied_zero=W
-                if "zero_meas:" in msg:
-                    parts = {}
-                    for token in msg.split("zero_meas:")[1].split():
-                        k, _, v = token.partition("=")
+
+            # Parse: zero_meas: cmd_elec=X mech=Y elec_meas=Z implied_zero=W
+            if "zero_meas:" in msg:
+                parts = {}
+                for token in msg.split("zero_meas:")[1].split():
+                    k, _, v = token.partition("=")
+                    try:
+                        parts[k] = float(v)
+                    except ValueError:
+                        pass
+                if "implied_zero" in parts:
+                    measurements.append(parts)
+            # Parse: zero_cal result: zero_electric_angle=X  direction=Y
+            elif "zero_cal result:" in msg:
+                for token in msg.split("zero_cal result:")[1].split():
+                    k, _, v = token.partition("=")
+                    if k == "zero_electric_angle":
                         try:
-                            parts[k] = float(v)
+                            zero_angle = float(v)
                         except ValueError:
                             pass
-                    if "implied_zero" in parts:
-                        measurements.append(parts)
-                # Parse: zero_cal result: zero_electric_angle=X  direction=Y
-                elif "zero_cal result:" in msg:
-                    for token in msg.split("zero_cal result:")[1].split():
-                        k, _, v = token.partition("=")
-                        if k == "zero_electric_angle":
-                            try:
-                                zero_angle = float(v)
-                            except ValueError:
-                                pass
-                        elif k == "direction":
-                            direction = v.strip()
-                    break  # Done.
-            # Non-comment lines are normal streaming rows; ignore during cal.
+                    elif k == "direction":
+                        direction = v.strip()
+                break  # Done.
 
         if zero_angle is None or not measurements:
             print("[host] ERROR: zero calibration failed — no result received.")
