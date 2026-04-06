@@ -155,11 +155,11 @@ void setup() {
   motor.current_limit = 1.0;
 
   // Velocity PID defaults — reasonable starting point, tune via P/I/D/F commands.
-  motor.PID_velocity.P = 0.25;
-  motor.PID_velocity.I = 5.0;
-  motor.PID_velocity.D = 0.001;
+  motor.PID_velocity.P = 0.03;
+  motor.PID_velocity.I = 1.0;
+  motor.PID_velocity.D = 0.000;
   motor.PID_velocity.output_ramp = 1000;
-  motor.LPF_velocity.Tf = 0.005;  // 5ms (~32 Hz corner) — reduced from 20ms to cut observation lag.
+  motor.LPF_velocity.Tf = 0.01;
 
   motor.velocity_limit = 1000;
   motor.target = 0;
