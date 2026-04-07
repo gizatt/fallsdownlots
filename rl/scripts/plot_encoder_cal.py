@@ -71,6 +71,12 @@ def process(cal: pd.DataFrame):
     ref_bwd_r = ref_bwd[::-1]
     err_bwd_r = err_bwd[::-1]
 
+    # The two passes unwrap in opposite directions and may land on different
+    # 2π branches (e.g. err_fwd ≈ +π, err_bwd_r ≈ -π when θ₀ ≈ π).
+    # Snap bwd onto the same branch as fwd so the DC cancels cleanly.
+    branch_offset = round((err_fwd.mean() - err_bwd_r.mean()) / (2 * np.pi)) * 2 * np.pi
+    err_bwd_r = err_bwd_r + branch_offset
+
     rot_start = max(ref_fwd[0],  ref_bwd_r[0])
     rot_end   = min(ref_fwd[-1], ref_bwd_r[-1])
     grid = np.linspace(rot_start, rot_end, N_GRID)

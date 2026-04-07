@@ -95,6 +95,11 @@ def build_lut(cal: pd.DataFrame) -> np.ndarray:
     ref_bwd = ref_bwd[::-1]
     err_bwd = err_bwd[::-1]
 
+    # Forward and backward unwrap in opposite directions and may land on
+    # different 2π branches. Snap bwd onto fwd's branch before averaging.
+    branch_offset = round((err_fwd.mean() - err_bwd.mean()) / (2 * np.pi)) * 2 * np.pi
+    err_bwd = err_bwd + branch_offset
+
     # Interpolate both passes onto a uniform grid spanning one rotation.
     rot_start = max(ref_fwd[0],  ref_bwd[0])
     rot_end   = min(ref_fwd[-1], ref_bwd[-1])
