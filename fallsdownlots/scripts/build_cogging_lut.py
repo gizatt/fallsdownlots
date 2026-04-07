@@ -1,25 +1,24 @@
 """
-Build cogging feedforward LUT from a slow-velocity sweep CSV.
+Build cogging feedforward LUT from calibration data.
 
 Usage:
+    # From a dedicated cogging sweep:
     python scripts/build_cogging_lut.py <cogging.csv> <r|l>
 
-Input CSV columns (produced by sysid.py --calibrate-cogging):
-  test         "cogging_sweep"
-  angle_rad    LUT-corrected mechanical angle (accumulated, unwrapped)
-  voltage_q    Actual q-axis voltage commanded by the velocity PID
-  step_target  Velocity setpoint: positive = forward pass, negative = reverse
+    # From a regular sysid CSV (uses low-speed velocity_steps):
+    python scripts/build_cogging_lut.py <sysid.csv> <r|l>
 
-Output: writes src/cogging_lut_r.h or src/cogging_lut_l.h
+The script auto-detects the source by checking which test labels are present.
+A sysid CSV must have been collected with firmware that streams voltage_q
+(the 5-field format: t_us, angle_rad, vel_rad_s, cmd, voltage_q).
 
 Algorithm:
   1. Separate forward (step_target > 0) and reverse (step_target < 0) samples.
   2. Compute electrical angle: (angle_rad * N_POLE_PAIRS) % (2π).
   3. Bin voltage_q by electrical angle into N_LUT equal bins.
-  4. Average the per-bin means from the two passes — friction (direction-
-     dependent) cancels; position-dependent cogging remains.
-  5. Subtract the overall mean so the feedforward is zero-mean (the DC
-     component is already handled by the velocity PID's integrator).
+  4. Average the per-bin means from both passes — friction and back-EMF
+     (both direction-dependent) cancel; position-dependent cogging remains.
+  5. Subtract the overall mean (DC handled by the PID integrator).
   6. Emit the C header.
 
 The feedforward is applied as:
@@ -34,22 +33,56 @@ import numpy as np
 import pandas as pd
 
 
-N_POLE_PAIRS = 7
-N_LUT        = 128
+N_POLE_PAIRS  = 7
+N_LUT         = 128
+MAX_SPEED_SYSID = 8.0  # rad/s — only low-speed steps have strong cogging signal
 
 
 def load(path: str) -> pd.DataFrame:
+    """
+    Load and return a DataFrame with columns: step_target, angle_rad, voltage_q.
+
+    Accepts either a dedicated cogging sweep CSV (test == "cogging_sweep") or a
+    regular sysid CSV (test == "velocity_steps").  For the sysid case, only
+    low-speed steps are used and only the steady-state tail of each step.
+    """
     df = pd.read_csv(path)
-    cal = df[df["test"] == "cogging_sweep"].copy()
-    if cal.empty:
-        sys.exit(f"ERROR: no 'cogging_sweep' rows found in {path}")
+    tests = set(df["test"].unique())
+
+    if "cogging_sweep" in tests:
+        cal = df[df["test"] == "cogging_sweep"].copy()
+        n_fwd = (cal["step_target"] > 0).sum()
+        n_rev = (cal["step_target"] < 0).sum()
+        print(f"[info] source: cogging sweep  {len(cal)} rows  "
+              f"({n_fwd} fwd, {n_rev} rev)", file=sys.stderr)
+
+    elif "velocity_steps" in tests:
+        sub = df[(df["test"] == "velocity_steps") &
+                 (df["step_target"].abs() <= MAX_SPEED_SYSID)].copy()
+        if sub.empty:
+            sys.exit(f"ERROR: no velocity_steps rows with |speed| ≤ "
+                     f"{MAX_SPEED_SYSID} rad/s found in {path}")
+        if "voltage_q" not in sub.columns:
+            sys.exit("ERROR: voltage_q column missing — re-run sysid with "
+                     "updated firmware that streams voltage.q")
+        # Keep only the steady-state tail of each step to avoid transients.
+        chunks = [grp.iloc[len(grp) // 2:]
+                  for _, grp in sub.groupby("step_target")]
+        cal = pd.concat(chunks)
+        n_fwd = (cal["step_target"] > 0).sum()
+        n_rev = (cal["step_target"] < 0).sum()
+        speeds = sorted(cal["step_target"].abs().unique())
+        print(f"[info] source: sysid velocity_steps  {len(cal)} rows  "
+              f"({n_fwd} fwd, {n_rev} rev)  speeds={speeds}", file=sys.stderr)
+
+    else:
+        sys.exit(f"ERROR: no 'cogging_sweep' or 'velocity_steps' rows in {path}")
+
     n_fwd = (cal["step_target"] > 0).sum()
     n_rev = (cal["step_target"] < 0).sum()
-    print(f"[info] {len(cal)} cogging sweep rows  ({n_fwd} fwd, {n_rev} rev)",
-          file=sys.stderr)
     if n_fwd == 0 or n_rev == 0:
-        sys.exit("ERROR: need both forward (step_target > 0) and reverse "
-                 "(step_target < 0) rows.")
+        sys.exit("ERROR: need both forward (step_target > 0) and reverse rows.")
+
     return cal
 
 
@@ -57,14 +90,13 @@ def build_lut(cal: pd.DataFrame) -> np.ndarray:
     fwd = cal[cal["step_target"] > 0]
     rev = cal[cal["step_target"] < 0]
 
-    # Electrical angle in [0, 2π) for each sample.
-    elec_fwd = (np.unwrap(fwd["angle_rad"].values) * N_POLE_PAIRS) % (2 * np.pi)
-    elec_rev = (np.unwrap(rev["angle_rad"].values) * N_POLE_PAIRS) % (2 * np.pi)
+    # Electrical angle in [0, 2π).  angle_rad is SimpleFOC's accumulated angle
+    # (no wrapping needed), so just scale and mod.
+    elec_fwd = (fwd["angle_rad"].values * N_POLE_PAIRS) % (2 * np.pi)
+    elec_rev = (rev["angle_rad"].values * N_POLE_PAIRS) % (2 * np.pi)
+    vq_fwd   = fwd["voltage_q"].values
+    vq_rev   = rev["voltage_q"].values
 
-    vq_fwd = fwd["voltage_q"].values
-    vq_rev = rev["voltage_q"].values
-
-    # Bin by electrical angle.
     bin_edges = np.linspace(0, 2 * np.pi, N_LUT + 1)
 
     def bin_mean(elec: np.ndarray, vq: np.ndarray) -> np.ndarray:
@@ -77,21 +109,17 @@ def build_lut(cal: pd.DataFrame) -> np.ndarray:
         if n_empty > 0:
             print(f"[warn] {n_empty}/{N_LUT} bins empty — interpolating",
                   file=sys.stderr)
-            # Linear interpolation for empty bins.
-            idx = np.arange(N_LUT)
+            idx   = np.arange(N_LUT)
             valid = ~np.isnan(means)
-            means = np.interp(idx, idx[valid], means[valid],
-                              period=N_LUT)
+            means = np.interp(idx, idx[valid], means[valid], period=N_LUT)
         return means
 
     mean_fwd = bin_mean(elec_fwd, vq_fwd)
     mean_rev = bin_mean(elec_rev, vq_rev)
 
-    # Average passes: friction (odd in direction) cancels, cogging remains.
+    # Average passes: friction and K_e·v (both direction-dependent) cancel.
     lut = 0.5 * (mean_fwd + mean_rev)
-
-    # Remove mean so feedforward is zero-mean (DC handled by PID integrator).
-    lut -= lut.mean()
+    lut -= lut.mean()   # DC handled by PID integrator
 
     rms_mv = np.sqrt(np.mean(lut ** 2)) * 1000
     pk_mv  = (lut.max() - lut.min()) * 1000
@@ -105,7 +133,7 @@ def emit_header(lut: np.ndarray, motor: str, out_path: Path) -> None:
     tag = motor.upper()
     lines = [
         f"// {motor.capitalize()} motor cogging feedforward LUT.",
-        f"// Generated by: python scripts/build_cogging_lut.py <cogging.csv> {motor}",
+        f"// Generated by: python scripts/build_cogging_lut.py <cal.csv> {motor}",
         f"// Indexed by electrical angle in [0, 2pi), 128 points, values in volts.",
         f"// Do not edit by hand — regenerate from calibration data.",
         f"#pragma once",
@@ -124,8 +152,8 @@ def emit_header(lut: np.ndarray, motor: str, out_path: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build cogging feedforward LUT from cogging sweep CSV")
-    parser.add_argument("csv",   help="Cogging sweep CSV from sysid.py --calibrate-cogging")
+        description="Build cogging feedforward LUT from calibration CSV")
+    parser.add_argument("csv",   help="Cogging sweep or sysid CSV")
     parser.add_argument("motor", choices=["r", "l"], help="Motor side (r=right, l=left)")
     args = parser.parse_args()
 
