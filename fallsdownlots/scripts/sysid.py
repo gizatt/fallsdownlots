@@ -332,7 +332,33 @@ def main():
 
         all_rows: list[dict] = []
 
-        board.set_velocity_mode(P=0.03, I=1, D=0.0, Tf=0.01)
+        board.set_torque_mode()
+        time.sleep(0.5)
+
+        all_rows += board.run_step_test(
+            amplitudes=[0.5, 1.0, 2.0, 4.0],
+            on_duration=5.0,
+            settle_duration=1.0,
+            test_label="torque_steps",
+        )
+
+        time.sleep(0.5)
+
+        all_rows += board.run_coastdown_test(
+            drive_val=5.0,
+            drive_duration=2.0,
+            coast_duration=3.0,
+            test_label="torque_coastdown",
+        )
+
+        time.sleep(1.0)
+
+        all_rows += board.run_chirp_test(
+            amp=5.0, f0=0.2, f1=30.0, dur=40.0,
+            test_label="torque_chirp",
+        )
+
+        board.set_velocity_mode(P=0.1, I=1, D=0.0, Tf=0.005)
         time.sleep(0.5)
 
         all_rows += board.run_step_test(
@@ -341,13 +367,15 @@ def main():
             settle_duration=1.0,
             test_label="velocity_steps",
         )
+        time.sleep(1.0)
 
         all_rows += board.run_coastdown_test(
-            drive_val=80.0,
+            drive_val=40.0,
             drive_duration=2.0,
             coast_duration=3.0,
             test_label="velocity_coastdown",
         )
+        time.sleep(1.0)
 
         all_rows += board.run_chirp_test(
             amp=30.0, f0=0.2, f1=30.0, dur=40.0,
