@@ -1,7 +1,9 @@
 /**
  * SysID firmware — single motor, serial streaming.
  *
- * Uses right motor hardware (Wire/AS5600, driver pins 6/9/10/5).
+ * Flash with:
+ *   pio run -e sysid_r -t upload   (right motor: Wire, pins 6/9/10/5)
+ *   pio run -e sysid_l -t upload   (left motor:  Wire_l pins 24/25, pins 12/13/26/11)
  *
  * Serial protocol (115200 baud, newline-terminated ASCII):
  *
@@ -22,9 +24,10 @@
  *
  *   Board -> Python during normal operation (CSV at loop rate ~500 Hz):
  *     <t_us>,<angle_rad>,<vel_rad_s>,<cmd>\n
+ *     (angle_rad is LUT-corrected)
  *
  *   Board -> Python during encoder calibration:
- *     E,<F|R>,<ref_elec_rad>,<raw_mech_rad>\n
+ *     E,<F|R>,<ref_elec_rad>,<raw_mech_rad>\n   (raw = no LUT applied)
  *     # CAL_START ...
  *     # CAL_REVERSE
  *     # CAL_DONE
@@ -33,20 +36,58 @@
  */
 
 #include <SimpleFOC.h>
+#include "encoder_lut_r.h"
+#include "encoder_lut_l.h"
 
 static constexpr int N_POLE_PAIRS = 7;
 
-// Plain sensor — no correction during calibration so we capture raw errors.
-MagneticSensorI2C as5600(AS5600_I2C);
-BLDCMotor motor = BLDCMotor(N_POLE_PAIRS, 12.0, 450);
-BLDCDriver3PWM driver = BLDCDriver3PWM(6, 9, 10, 5);
+// -----------------------------------------------------------------------
+// AS5600 with 128-point LUT correction.
+// getRawSensorAngle() bypasses the LUT — used during calibration so we
+// record the true uncorrected sensor reading.
+// -----------------------------------------------------------------------
+struct LutAS5600 : public MagneticSensorI2C {
+  const float *lut;
+  int lut_n;
+  LutAS5600(const float *lut, int lut_n)
+    : MagneticSensorI2C(AS5600_I2C), lut(lut), lut_n(lut_n) {}
+
+  float getSensorAngle() override {
+    float raw = MagneticSensorI2C::getSensorAngle();
+    float pos = raw * lut_n / TWO_PI;
+    int   i0  = (int)pos % lut_n;
+    int   i1  = (i0 + 1) % lut_n;
+    float f   = pos - (int)pos;
+    return raw - (lut[i0] + f * (lut[i1] - lut[i0]));
+  }
+
+  float getRawSensorAngle() {
+    return MagneticSensorI2C::getSensorAngle();
+  }
+};
+
+// -----------------------------------------------------------------------
+// Hardware selection via build flag: -DMOTOR_LEFT or -DMOTOR_RIGHT
+// -----------------------------------------------------------------------
+#if defined(MOTOR_LEFT)
+  TwoWire Wire_motor(NRF_TWIM1, NRF_TWIS1,
+                     SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, 24, 25);
+  LutAS5600        as5600(ENCODER_LUT_L, 128);
+  BLDCDriver3PWM   driver(12, 13, 26, 11);
+#else  // MOTOR_RIGHT (default)
+  TwoWire         &Wire_motor = Wire;
+  LutAS5600        as5600(ENCODER_LUT_R, 128);
+  BLDCDriver3PWM   driver(6, 9, 10, 5);
+#endif
+
+BLDCMotor motor(N_POLE_PAIRS, 12.0, 450);
 
 // -----------------------------------------------------------------------
 // Normal sysid state
 // -----------------------------------------------------------------------
 
 enum Mode { TORQUE, VELOCITY };
-Mode mode = TORQUE;
+Mode  mode   = TORQUE;
 float target = 0.0f;
 
 bool     chirp_active = false;
@@ -55,18 +96,18 @@ float    chirp_phase, chirp_f_current;
 uint32_t chirp_start_us;
 
 void start_chirp(float amp, float f0, float f1, float dur) {
-  chirp_amp      = amp;
-  chirp_f0       = f0;
-  chirp_f1       = f1;
-  chirp_duration = dur;
-  chirp_phase    = 0.0f;
+  chirp_amp       = amp;
+  chirp_f0        = f0;
+  chirp_f1        = f1;
+  chirp_duration  = dur;
+  chirp_phase     = 0.0f;
   chirp_f_current = f0;
-  chirp_start_us = micros();
-  chirp_active   = true;
+  chirp_start_us  = micros();
+  chirp_active    = true;
 }
 
 void set_mode(Mode new_mode) {
-  mode = new_mode;
+  mode   = new_mode;
   target = 0.0f;
   chirp_active = false;
   motor.controller = (mode == VELOCITY)
@@ -81,19 +122,16 @@ void set_mode(Mode new_mode) {
 // -----------------------------------------------------------------------
 //
 // Steps the D-axis (Ud=voltage, Uq=0) through one full mechanical rotation
-// forward then backward, recording (ref_elec, raw_mech) at each settled step.
-// loopFOC/move are bypassed during calibration.
+// forward then backward. The rotor follows the reference regardless of
+// encoder errors, giving clean (ref_elec, raw_mech) pairs.
+// loopFOC/move are bypassed; raw (uncorrected) angle is streamed.
 //
-// Choosing steps and settle time:
-//   CAL_STEPS = 1000 → one step per 2π/1000 mechanical rad ≈ 0.36°
-//   CAL_SETTLE_US = 5000 → 5 ms settle, totals ~10 s for fwd+bwd
-//
-// Phase ordering: if the raw_mech angle decreases while ref_elec increases,
-// two motor phase wires are swapped. Swap them and recalibrate.
+// Phase ordering: if raw_mech decreases while ref_elec increases, two
+// motor phase wires are swapped. Swap them and recalibrate.
 
-static constexpr int      CAL_STEPS      = 1000;
-static constexpr float    CAL_STEP_ELEC  = TWO_PI * N_POLE_PAIRS / (float)CAL_STEPS;
-static constexpr uint32_t CAL_SETTLE_US  = 5000;
+static constexpr int      CAL_STEPS     = 1000;
+static constexpr float    CAL_STEP_ELEC = TWO_PI * N_POLE_PAIRS / (float)CAL_STEPS;
+static constexpr uint32_t CAL_SETTLE_US = 5000;  // 5 ms/step → ~10 s total
 
 enum CalState { CAL_IDLE, CAL_FWD, CAL_BWD };
 CalState cal_state    = CAL_IDLE;
@@ -107,24 +145,20 @@ void start_cal(float voltage) {
   cal_ref_elec = 0.0f;
   cal_step     = 0;
   cal_state    = CAL_FWD;
-  // Set initial rotor position and start the settle timer.
   motor.setPhaseVoltage(0.0f, cal_voltage, cal_ref_elec);
-  cal_last_us = micros();
+  cal_last_us  = micros();
   Serial.printf("# CAL_START voltage=%.2f steps=%d settle_us=%lu\n",
                 cal_voltage, CAL_STEPS, (unsigned long)CAL_SETTLE_US);
 }
 
-// Called every loop iteration during calibration. Skips until CAL_SETTLE_US
-// has passed since the last step, then reads, prints, and advances.
 void update_cal() {
   if (micros() - cal_last_us < CAL_SETTLE_US) return;
   cal_last_us = micros();
 
-  // Motor has been sitting at cal_ref_elec for CAL_SETTLE_US — read it.
+  // Motor has settled at cal_ref_elec — read raw (uncorrected) angle.
   char dir = (cal_state == CAL_FWD) ? 'F' : 'R';
-  Serial.printf("E,%c,%.5f,%.5f\n", dir, cal_ref_elec, as5600.getSensorAngle());
+  Serial.printf("E,%c,%.5f,%.5f\n", dir, cal_ref_elec, as5600.getRawSensorAngle());
 
-  // Advance reference angle.
   cal_ref_elec += (cal_state == CAL_FWD) ? CAL_STEP_ELEC : -CAL_STEP_ELEC;
 
   if (++cal_step >= CAL_STEPS) {
@@ -213,19 +247,19 @@ void read_serial_commands() {
 void setup() {
   Serial.begin(115200);
 
-  Wire.setClock(400000);
-  Wire.begin();
-  as5600.init(&Wire);
+  Wire_motor.setClock(400000);
+  Wire_motor.begin();
+  as5600.init(&Wire_motor);
 
   driver.voltage_power_supply = 7.4;
   driver.init();
   motor.linkDriver(&driver);
   motor.linkSensor(&as5600);
 
-  motor.torque_controller = TorqueControlType::voltage;
-  motor.controller        = MotionControlType::torque;
-  motor.voltage_limit     = 7.4;
-  motor.current_limit     = 1.0;
+  motor.torque_controller        = TorqueControlType::voltage;
+  motor.controller               = MotionControlType::torque;
+  motor.voltage_limit            = 7.4;
+  motor.current_limit            = 1.0;
 
   motor.PID_velocity.P           = 0.03;
   motor.PID_velocity.I           = 1.0;
@@ -239,7 +273,11 @@ void setup() {
   motor.init();
   motor.initFOC();
 
-  Serial.println("# sysid ready.");
+#if defined(MOTOR_LEFT)
+  Serial.println("# sysid ready (LEFT motor).");
+#else
+  Serial.println("# sysid ready (RIGHT motor).");
+#endif
   Serial.println("# Commands: T<val> M<0|1> P I D F C<amp,f0,f1,dur> K<voltage>");
 }
 
@@ -277,6 +315,7 @@ void loop() {
 
   motor.move(target);
 
+  // Stream LUT-corrected angle for sysid accuracy.
   Serial.printf("%lu,%.5f,%.4f,%.4f\n",
     t,
     as5600.getAngle(),

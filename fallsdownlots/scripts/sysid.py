@@ -297,6 +297,9 @@ def main():
     parser.add_argument("--out", default=None, help="Output CSV path")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run encoder LUT calibration instead of sysid")
+    parser.add_argument("--motor", choices=["r", "l"], default="r",
+                        help="Which motor side is connected (default: r). "
+                             "Must match the flashed firmware (sysid_r or sysid_l).")
     parser.add_argument("--cal-voltage", type=float, default=3.0,
                         help="D-axis voltage for calibration (default 3.0 V)")
     args = parser.parse_args()
@@ -313,9 +316,9 @@ def main():
             out_path.parent.mkdir(parents=True, exist_ok=True)
             rows = board.run_encoder_calibration(voltage=args.cal_voltage)
             save_rows(rows, out_path, CAL_FIELDS)
+            m = args.motor
             print(f"\n[host] Next steps:")
-            print(f"[host]   python scripts/build_encoder_lut.py {out_path} r > src/encoder_lut_r.h")
-            print(f"[host]   (or 'l' for left motor)")
+            print(f"[host]   python scripts/build_encoder_lut.py {out_path} {m} > src/encoder_lut_{m}.h")
             print(f"[host]   Then reflash: pio run -e fallsdownlots -t upload")
             return
 
