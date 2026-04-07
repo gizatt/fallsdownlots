@@ -6,32 +6,30 @@
 #include "IMU.hpp"
 #include "BLEManager.hpp"
 #include "ThermistorManager.hpp"
+#include "encoder_lut_r.h"
+#include "encoder_lut_l.h"
 
-// ============================================================
-// Motor calibration constants
-// Run `python scripts/sysid.py --calibrate-ecc`  to measure eccentricity,
-// then update ECC_A / ECC_PHI below and reflash.
-// Run `python scripts/sysid.py --calibrate-cogging` afterwards to
-// characterise cogging with the corrected sensor.
-// ============================================================
-static constexpr float MOTOR_R_ECC_A   = 0.0f;  // eccentricity amplitude (rad)
-static constexpr float MOTOR_R_ECC_PHI = 0.0f;  // eccentricity phase     (rad)
-static constexpr float MOTOR_L_ECC_A   = 0.0f;
-static constexpr float MOTOR_L_ECC_PHI = 0.0f;
-
-// AS5600 wrapper that applies eccentricity correction at the sensor level.
-// SimpleFOC calls getSensorAngle() to drive FOC, velocity estimation, and
-// initFOC zero-cal — correcting here means all of those see a clean angle.
-struct CorrectedAS5600 : public MagneticSensorI2C {
-  float A = 0.0f, phi = 0.0f;
-  CorrectedAS5600() : MagneticSensorI2C(AS5600_I2C) {}
+// AS5600 with a 128-point lookup-table correction for eccentricity.
+// Generate the LUT headers with:
+//   python scripts/build_encoder_lut.py <cal_right.csv> r
+//   python scripts/build_encoder_lut.py <cal_left.csv>  l
+// then reflash. All-zero LUTs = no correction.
+struct LutAS5600 : public MagneticSensorI2C {
+  const float *lut;
+  int lut_n;
+  LutAS5600(const float *lut, int lut_n)
+    : MagneticSensorI2C(AS5600_I2C), lut(lut), lut_n(lut_n) {}
   float getSensorAngle() override {
     float raw = MagneticSensorI2C::getSensorAngle();
-    return raw - A * sinf(raw + phi);
+    float pos = raw * lut_n / TWO_PI;
+    int   i0  = (int)pos % lut_n;
+    int   i1  = (i0 + 1) % lut_n;
+    float f   = pos - (int)pos;
+    return raw - (lut[i0] + f * (lut[i1] - lut[i0]));
   }
 };
 
-CorrectedAS5600 as5600_r;
+LutAS5600 as5600_r(ENCODER_LUT_R, 128);
 TwoWire &Wire_r = Wire;
 BLDCMotor motor_r = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_r = BLDCDriver3PWM(6, 9, 10, 5);
@@ -40,7 +38,7 @@ const int MOTOR_R_THERMISTOR_WRITE_PIN = A4;
 const float MOTOR_R_THERMISTOR_R_DIVIDER = 1000; // ohms
 const float MOTOR_THERMISTOR_LOWPASS_RC = 0.5;
 
-CorrectedAS5600 as5600_l;
+LutAS5600 as5600_l(ENCODER_LUT_L, 128);
 TwoWire Wire_l(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, 24, 25);
 BLDCMotor motor_l = BLDCMotor(7, 12.0, 450); // Nominally 250, but this value passes the 0-torque-makes-it-feel-smooth test.
 BLDCDriver3PWM driver_l = BLDCDriver3PWM(12, 13, 26, 11);
@@ -154,12 +152,7 @@ void setup()
   blueart_packet_serial.setPacketHandler(&onBLEPacketReceived);
   last_received_ble_packet_millis = millis();
 
-  // Initialize magnetic encoders and apply eccentricity correction.
-  as5600_r.A   = MOTOR_R_ECC_A;
-  as5600_r.phi = MOTOR_R_ECC_PHI;
   as5600_r.init(&Wire_r);
-  as5600_l.A   = MOTOR_L_ECC_A;
-  as5600_l.phi = MOTOR_L_ECC_PHI;
   as5600_l.init(&Wire_l);
 
   Serial.println("AS5600 ready");

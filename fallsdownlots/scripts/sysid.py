@@ -1,51 +1,52 @@
 """
 SysID driver for the fallsdownlots motor.
 
-Connects to the sysid firmware over serial, runs step and chirp test sequences
-in both torque and velocity control modes, and saves the results to CSV.
+Connects to the sysid firmware over serial, runs test sequences and saves
+results to CSV.
 
 Usage:
+    # Encoder LUT calibration (run once per motor before sysid):
+    python scripts/sysid.py --port /dev/ttyACM0 --calibrate [--cal-voltage 3.0]
+
+    # Full sysid sequence (steps + chirp in velocity mode):
     python scripts/sysid.py --port /dev/ttyACM0 [--out data/sysid_<timestamp>.csv]
-    python scripts/sysid.py --port COM5 [--out data/sysid_<timestamp>.csv]
 
-Each test sequence is appended to a single CSV file with a 'test' column
-identifying the run. Comment lines from the firmware (starting with #) are
-printed to stdout but not saved.
+Calibration workflow:
+    1. python scripts/sysid.py --port <port> --calibrate --out cal_right.csv
+    2. python scripts/build_encoder_lut.py cal_right.csv r > src/encoder_lut_r.h
+    3. Repeat for the left motor, write to encoder_lut_l.h
+    4. Reflash firmware (pio run -e fallsdownlots -t upload)
+    5. Run sysid normally
 
-Test sequences run (in order):
-    Torque mode:
-        - Steps: +/-[0.5, 1.0, 2.0, 3.5] V, 2s on / 1s settle
-        - Coast-down: 3.5V for 2s then 0V for 3s
-        - Log-chirp: 3.0V amp, 0.2-80 Hz, 40s
+Encoder calibration output is a CSV with columns:
+    test, direction, ref_elec, raw_mech
 
-    Velocity mode (SimpleFOC velocity PID):
-        - Same structure but in rad/s: +/-[5, 10, 20, 40] rad/s
-        - Chirp: 30 rad/s amp, 0.2-30 Hz, 40s
-
-Firmware must be flashed with the 'sysid' PlatformIO env.
+Normal sysid output is a CSV with columns:
+    test, t_us, recv_time, angle_rad, vel_rad_s, cmd, step_target
 """
 
 import argparse
 import csv
+import queue
 import re
 import sys
 import threading
 import time
 from pathlib import Path
 
-import queue
 import serial
 
 
 def normalize_port(port: str) -> str:
-    """Translate COM<N> -> /dev/ttyS<N> when running under WSL/Linux."""
+    """Translate COM<N> -> /dev/ttyS<N> when running under WSL."""
     m = re.fullmatch(r"COM(\d+)", port, re.IGNORECASE)
     if m and sys.platform != "win32":
         return f"/dev/ttyS{m.group(1)}"
     return port
 
+
 # ---------------------------------------------------------------------------
-# Serial reader — runs in a background thread, buffers incoming data rows.
+# Serial reader — background thread, buffers incoming rows.
 # ---------------------------------------------------------------------------
 
 class SerialReader:
@@ -65,35 +66,50 @@ class SerialReader:
                 if not raw:
                     continue
                 line = raw.decode("ascii", errors="replace").strip()
+
                 if line.startswith("#"):
                     msg = line[1:].strip()
                     print(f"[fw] {msg}")
                     self._comment_queue.put(msg)
                     continue
-                parts = line.split(",")
-                if len(parts) != 4:
+
+                # Encoder calibration data: E,<F|R>,<ref_elec>,<raw_mech>
+                if line.startswith("E,"):
+                    parts = line.split(",")
+                    if len(parts) == 4:
+                        row = {
+                            "test":      "encoder_cal",
+                            "direction": parts[1],
+                            "ref_elec":  float(parts[2]),
+                            "raw_mech":  float(parts[3]),
+                        }
+                        with self._lock:
+                            self._rows.append(row)
                     continue
-                row = {
-                    "t_us": int(parts[0]),
-                    "angle_rad": float(parts[1]),
-                    "vel_rad_s": float(parts[2]),
-                    "cmd": float(parts[3]),
-                    "recv_time": time.monotonic(),
-                }
-                with self._lock:
-                    self._rows.append(row)
+
+                # Normal sysid data: <t_us>,<angle_rad>,<vel_rad_s>,<cmd>
+                parts = line.split(",")
+                if len(parts) == 4:
+                    row = {
+                        "t_us":       int(parts[0]),
+                        "angle_rad":  float(parts[1]),
+                        "vel_rad_s":  float(parts[2]),
+                        "cmd":        float(parts[3]),
+                        "recv_time":  time.monotonic(),
+                    }
+                    with self._lock:
+                        self._rows.append(row)
+
             except (ValueError, UnicodeDecodeError):
                 pass
             except serial.SerialException:
                 break
 
     def flush(self):
-        """Discard all buffered rows (call before starting a test)."""
         with self._lock:
             self._rows.clear()
 
     def collect(self) -> list[dict]:
-        """Return and clear all buffered rows since the last flush/collect."""
         with self._lock:
             rows, self._rows = self._rows, []
         return rows
@@ -109,28 +125,24 @@ class SerialReader:
 
 class SysIDBoard:
     def __init__(self, port: str, baud: int = 115200):
-        # dsrdtr=False, rtscts=False: prevent flow-control lines from
-        # toggling DTR and resetting the nRF52840 on connect (Windows issue).
         self._ser = serial.Serial(
             port, baud, timeout=1.0,
             dsrdtr=False, rtscts=False,
         )
-        time.sleep(2.0)  # Wait for board to be ready.
+        time.sleep(2.0)
         self._ser.reset_input_buffer()
         self._reader = SerialReader(self._ser)
 
     def wait_for_data(self, timeout: float = 10.0) -> bool:
-        """Block until data rows are flowing in, or timeout. Returns True if data arrived."""
         print(f"[host] waiting for firmware data stream (timeout={timeout}s)...")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._reader._lock:
                 if self._reader._rows:
-                    rate_est = len(self._reader._rows)
-                    print(f"[host] receiving data ({rate_est} rows in first check). Firmware is live.")
+                    print(f"[host] firmware is live.")
                     return True
             time.sleep(0.2)
-        print("[host] ERROR: no data received from firmware. Is the sysid firmware flashed?")
+        print("[host] ERROR: no data received. Is the sysid firmware flashed?")
         return False
 
     def _send(self, cmd: str):
@@ -164,7 +176,6 @@ class SysIDBoard:
         settle_duration: float,
         test_label: str,
     ) -> list[dict]:
-        """Step through each amplitude (positive then negative), collect data."""
         rows = []
         for amp in amplitudes:
             for sign in (+1, -1):
@@ -189,7 +200,6 @@ class SysIDBoard:
         coast_duration: float,
         test_label: str,
     ) -> list[dict]:
-        """Drive to steady speed, then cut to 0 and record deceleration."""
         print(f"[host] coast-down: drive={drive_val:.2f} for {drive_duration}s "
               f"then coast {coast_duration}s")
         self._reader.flush()
@@ -211,10 +221,9 @@ class SysIDBoard:
         dur: float,
         test_label: str,
     ) -> list[dict]:
-        """Run a firmware-generated log-chirp and collect the response."""
         self._reader.flush()
         self.start_chirp(amp, f0, f1, dur)
-        time.sleep(dur + 1.0)  # Extra second to collect the tail.
+        time.sleep(dur + 1.0)
         self.set_target(0.0)
         rows = self._reader.collect()
         for r in rows:
@@ -222,64 +231,37 @@ class SysIDBoard:
             r["step_target"] = float("nan")
         return rows
 
-    def run_ecc_calibration(
-        self,
-        voltage: float = 3.0,
-        duration: float = 8.0,
-    ) -> list[dict]:
+    def run_encoder_calibration(self, voltage: float = 3.0) -> list[dict]:
         """
-        Phase 1 — eccentricity calibration.
+        Ben Katz encoder LUT calibration.
 
-        Spin at a high-ish open-loop torque voltage so the motor moves fast
-        enough that cogging averages out.  Detrending the angle ramp reveals
-        the AS5600 eccentricity error as a sinusoid at 1× mechanical.
+        Steps the motor's D-axis (stepper-style) through one full mechanical
+        rotation forward then backward, recording raw encoder vs reference
+        angle at each step.  Takes ~10 s at default settings.
 
-        After running, feed the printed ECC_A / ECC_PHI into the firmware
-        calibration block in main-sysid.cpp / main-fallsdownlots.cpp and
-        reflash before running phase 2.
+        Feed the resulting CSV to build_encoder_lut.py to produce the C header.
         """
-        self.set_torque_mode()
-        time.sleep(0.2)
-        print(f"[host] -> phase 1: eccentricity cal  voltage={voltage:.2f} V  dur={duration:.1f}s")
+        # How long the firmware cal takes: 2 * CAL_STEPS * CAL_SETTLE_US
+        # = 2 * 1000 * 5ms = 10 s, plus some margin.
+        expected_duration_s = 12.0
+        print(f"[host] -> encoder cal  voltage={voltage:.2f} V  "
+              f"(~{expected_duration_s:.0f}s)")
         self._reader.flush()
-        self.set_target(voltage)
-        time.sleep(duration)
-        self.set_target(0.0)
+        self._send(f"K{voltage:.2f}")
+
+        deadline = time.monotonic() + expected_duration_s + 10.0
+        while time.monotonic() < deadline:
+            try:
+                msg = self._reader._comment_queue.get(timeout=1.0)
+                if "CAL_DONE" in msg:
+                    break
+                if "CAL_REVERSE" in msg:
+                    print("[host]   reversing direction...")
+            except queue.Empty:
+                pass
+
         rows = self._reader.collect()
-        for r in rows:
-            r["test"] = "eccentricity_cal"
-            r["step_target"] = voltage
-        print(f"[host]   collected {len(rows)} rows")
-        return rows
-
-    def run_cogging_calibration(
-        self,
-        voltage: float = 0.3,
-        duration: float = 15.0,
-    ) -> list[dict]:
-        """
-        Phase 2 — cogging + ezero calibration.
-
-        Requires eccentricity correction already flashed into firmware.
-        Spin at a low open-loop torque voltage so the motor moves slowly
-        and cogging dominates the velocity ripple.  plot_sysid.py bins
-        velocity vs corrected electrical angle to reveal the cogging profile.
-
-        initFOC runs at firmware boot with the corrected sensor, so the
-        zero_electric_angle printed at startup is the ezero to use.
-        """
-        self.set_torque_mode()
-        time.sleep(0.2)
-        print(f"[host] -> phase 2: cogging cal  voltage={voltage:.2f} V  dur={duration:.1f}s")
-        self._reader.flush()
-        self.set_target(voltage)
-        time.sleep(duration)
-        self.set_target(0.0)
-        rows = self._reader.collect()
-        for r in rows:
-            r["test"] = "cogging_cal"
-            r["step_target"] = voltage
-        print(f"[host]   collected {len(rows)} rows")
+        print(f"[host]   collected {len(rows)} calibration rows")
         return rows
 
     def close(self):
@@ -291,12 +273,13 @@ class SysIDBoard:
 # CSV output
 # ---------------------------------------------------------------------------
 
-FIELDS = ["test", "t_us", "recv_time", "angle_rad", "vel_rad_s", "cmd", "step_target"]
+SYSID_FIELDS = ["test", "t_us", "recv_time", "angle_rad", "vel_rad_s", "cmd", "step_target"]
+CAL_FIELDS   = ["test", "direction", "ref_elec", "raw_mech"]
 
-def save_rows(rows: list[dict], path: Path, append: bool = False):
+def save_rows(rows: list[dict], path: Path, fields: list[str], append: bool = False):
     mode = "a" if append else "w"
     with open(path, mode, newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         if not append:
             writer.writeheader()
         writer.writerows(rows)
@@ -308,22 +291,14 @@ def save_rows(rows: list[dict], path: Path, append: bool = False):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="SysID driver")
-    parser.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyACM0")
+    parser = argparse.ArgumentParser(description="SysID / encoder-cal driver")
+    parser.add_argument("--port", required=True, help="Serial port, e.g. /dev/ttyACM0 or COM5")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--out", default=None,
-                        help="Output CSV path. Defaults to sysid_<timestamp>.csv")
-    cal_group = parser.add_mutually_exclusive_group()
-    cal_group.add_argument("--calibrate-ecc", action="store_true",
-                           help="Phase 1: eccentricity calibration (high-speed torque spin). "
-                                "Fit ECC_A/ECC_PHI, paste into firmware, reflash, then run --calibrate-cogging.")
-    cal_group.add_argument("--calibrate-cogging", action="store_true",
-                           help="Phase 2: cogging calibration (low-speed torque spin). "
-                                "Requires eccentricity correction already in firmware.")
-    parser.add_argument("--ecc-voltage", type=float, default=3.0,
-                        help="Open-loop voltage for eccentricity phase (default 3.0 V).")
-    parser.add_argument("--cogging-voltage", type=float, default=0.3,
-                        help="Open-loop voltage for cogging phase (default 0.3 V).")
+    parser.add_argument("--out", default=None, help="Output CSV path")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Run encoder LUT calibration instead of sysid")
+    parser.add_argument("--cal-voltage", type=float, default=3.0,
+                        help="D-axis voltage for calibration (default 3.0 V)")
     args = parser.parse_args()
 
     port = normalize_port(args.port)
@@ -331,63 +306,29 @@ def main():
     board = SysIDBoard(port, args.baud)
     print("[host] connected.")
 
-    if args.calibrate_ecc or args.calibrate_cogging:
-        out_path = Path(args.out) if args.out else \
-            Path(f"cal_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if args.calibrate_ecc:
-                rows = board.run_ecc_calibration(voltage=args.ecc_voltage)
-                print(f"\n[host] Analyse with: uv run scripts/plot_sysid.py {out_path}")
-                print(f"[host] Then paste ECC_A / ECC_PHI into firmware and reflash.")
-                print(f"[host] Then run: python scripts/sysid.py --port <port> --calibrate-cogging")
-            else:
-                rows = board.run_cogging_calibration(voltage=args.cogging_voltage)
-                print(f"\n[host] Analyse with: uv run scripts/plot_sysid.py {out_path}")
-        finally:
-            board.close()
-        save_rows(rows, out_path)
-        return
-
-    out_path = Path(args.out) if args.out else \
-        Path(f"sysid_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not board.wait_for_data():
-        board.close()
-        sys.exit(1)
-
-    all_rows: list[dict] = []
-
     try:
-        # ------------------------------------------------------------------
-        # Torque (voltage) mode
-        # ------------------------------------------------------------------
-        # board.set_torque_mode()
-        # time.sleep(0.5)
+        if args.calibrate:
+            out_path = Path(args.out) if args.out else \
+                Path(f"cal_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            rows = board.run_encoder_calibration(voltage=args.cal_voltage)
+            save_rows(rows, out_path, CAL_FIELDS)
+            print(f"\n[host] Next steps:")
+            print(f"[host]   python scripts/build_encoder_lut.py {out_path} r > src/encoder_lut_r.h")
+            print(f"[host]   (or 'l' for left motor)")
+            print(f"[host]   Then reflash: pio run -e fallsdownlots -t upload")
+            return
 
-        # all_rows += board.run_step_test(
-        #     amplitudes=[0.5, 1.0, 2.0, 3.5],
-        #     on_duration=2.0,
-        #     settle_duration=1.0,
-        #     test_label="torque_steps",
-        # )
+        # Normal sysid.
+        out_path = Path(args.out) if args.out else \
+            Path(f"sysid_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # all_rows += board.run_coastdown_test(
-        #     drive_val=3.5,
-        #     drive_duration=2.0,
-        #     coast_duration=3.0,
-        #     test_label="torque_coastdown",
-        # )
+        if not board.wait_for_data():
+            sys.exit(1)
 
-        # all_rows += board.run_chirp_test(
-        #     amp=3.0, f0=0.2, f1=80.0, dur=40.0,
-        #     test_label="torque_chirp",
-        # )
+        all_rows: list[dict] = []
 
-        # ------------------------------------------------------------------
-        # Velocity mode
-        # ------------------------------------------------------------------
         board.set_velocity_mode(P=0.03, I=1, D=0.0, Tf=0.01)
         time.sleep(0.5)
 
@@ -410,14 +351,16 @@ def main():
             test_label="velocity_chirp",
         )
 
-    except KeyboardInterrupt:
-        print("\n[host] interrupted, saving what we have...")
-    finally:
-        board.set_target(0.0)
-        board.close()
+        save_rows(all_rows, out_path, SYSID_FIELDS)
+        print(f"[host] done. {len(all_rows)} total rows.")
 
-    save_rows(all_rows, out_path)
-    print(f"[host] done. {len(all_rows)} total rows.")
+    except KeyboardInterrupt:
+        print("\n[host] interrupted.")
+        if args.calibrate:
+            return
+        board.set_target(0.0)
+    finally:
+        board.close()
 
 
 if __name__ == "__main__":
