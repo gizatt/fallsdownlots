@@ -318,7 +318,7 @@ def main():
             save_rows(rows, out_path, CAL_FIELDS)
             m = args.motor
             print(f"\n[host] Next steps:")
-            print(f"[host]   python scripts/build_encoder_lut.py {out_path} {m} > src/encoder_lut_{m}.h")
+            print(f"[host]   python scripts/build_encoder_lut.py {out_path} {m}")
             print(f"[host]   Then reflash: pio run -e fallsdownlots -t upload")
             return
 
