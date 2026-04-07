@@ -87,14 +87,15 @@ class SerialReader:
                             self._rows.append(row)
                     continue
 
-                # Normal sysid data: <t_us>,<angle_rad>,<vel_rad_s>,<cmd>
+                # Normal sysid data: <t_us>,<angle_rad>,<vel_rad_s>,<cmd>,<voltage_q>
                 parts = line.split(",")
-                if len(parts) == 4:
+                if len(parts) == 5:
                     row = {
                         "t_us":       int(parts[0]),
                         "angle_rad":  float(parts[1]),
                         "vel_rad_s":  float(parts[2]),
                         "cmd":        float(parts[3]),
+                        "voltage_q":  float(parts[4]),
                         "recv_time":  time.monotonic(),
                     }
                     with self._lock:
@@ -231,6 +232,46 @@ class SysIDBoard:
             r["step_target"] = float("nan")
         return rows
 
+    def run_cogging_sweep(
+        self,
+        speed: float = 2.0,
+        n_revolutions: float = 8.0,
+        P: float = 0.1,
+        I: float = 5.0,
+        Tf: float = 0.02,
+    ) -> list[dict]:
+        """
+        Measure cogging torque profile by running slow constant-velocity sweeps.
+
+        Runs in velocity mode at +speed then -speed for n_revolutions each.
+        Averaging forward and backward passes cancels friction, leaving the
+        angle-dependent cogging torque (expressed as motor voltage.q).
+
+        Feed the resulting CSV to build_cogging_lut.py to produce the C header.
+        """
+        duration = n_revolutions * 2 * 3.14159265 / speed
+        print(f"[host] -> cogging sweep  speed={speed:.2f} rad/s  "
+              f"revs={n_revolutions:.1f}  duration={duration:.1f}s/dir")
+        self.set_velocity_mode(P=P, I=I, D=0.0, Tf=Tf)
+        time.sleep(0.5)
+
+        rows = []
+        for sign, label in [(+1, "forward"), (-1, "reverse")]:
+            print(f"[host]   {label} pass...")
+            self._reader.flush()
+            self.set_target(sign * speed)
+            time.sleep(duration)
+            self.set_target(0.0)
+            chunk = self._reader.collect()
+            for r in chunk:
+                r["test"] = "cogging_sweep"
+                r["step_target"] = sign * speed
+            rows.extend(chunk)
+            time.sleep(1.0)  # let motor settle between passes
+
+        print(f"[host]   collected {len(rows)} cogging sweep rows")
+        return rows
+
     def run_encoder_calibration(self, voltage: float = 3.0) -> list[dict]:
         """
         Ben Katz encoder LUT calibration.
@@ -273,7 +314,7 @@ class SysIDBoard:
 # CSV output
 # ---------------------------------------------------------------------------
 
-SYSID_FIELDS = ["test", "t_us", "recv_time", "angle_rad", "vel_rad_s", "cmd", "step_target"]
+SYSID_FIELDS = ["test", "t_us", "recv_time", "angle_rad", "vel_rad_s", "cmd", "voltage_q", "step_target"]
 CAL_FIELDS   = ["test", "direction", "ref_elec", "raw_mech"]
 
 def save_rows(rows: list[dict], path: Path, fields: list[str], append: bool = False):
@@ -297,11 +338,17 @@ def main():
     parser.add_argument("--out", default=None, help="Output CSV path")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run encoder LUT calibration instead of sysid")
+    parser.add_argument("--calibrate-cogging", action="store_true",
+                        help="Run cogging LUT calibration instead of sysid")
     parser.add_argument("--motor", choices=["r", "l"], default="r",
                         help="Which motor side is connected (default: r). "
                              "Must match the flashed firmware (sysid_r or sysid_l).")
     parser.add_argument("--cal-voltage", type=float, default=3.0,
-                        help="D-axis voltage for calibration (default 3.0 V)")
+                        help="D-axis voltage for encoder calibration (default 3.0 V)")
+    parser.add_argument("--cogging-speed", type=float, default=2.0,
+                        help="Speed (rad/s) for cogging sweep (default 2.0)")
+    parser.add_argument("--cogging-revs", type=float, default=8.0,
+                        help="Number of revolutions per direction for cogging sweep (default 8)")
     args = parser.parse_args()
 
     port = normalize_port(args.port)
@@ -319,6 +366,23 @@ def main():
             m = args.motor
             print(f"\n[host] Next steps:")
             print(f"[host]   python scripts/build_encoder_lut.py {out_path} {m}")
+            print(f"[host]   Then reflash: pio run -e fallsdownlots -t upload")
+            return
+
+        if args.calibrate_cogging:
+            out_path = Path(args.out) if args.out else \
+                Path(f"cogging_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            if not board.wait_for_data():
+                sys.exit(1)
+            rows = board.run_cogging_sweep(
+                speed=args.cogging_speed,
+                n_revolutions=args.cogging_revs,
+            )
+            save_rows(rows, out_path, SYSID_FIELDS)
+            m = args.motor
+            print(f"\n[host] Next steps:")
+            print(f"[host]   python scripts/build_cogging_lut.py {out_path} {m}")
             print(f"[host]   Then reflash: pio run -e fallsdownlots -t upload")
             return
 
@@ -387,7 +451,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[host] interrupted.")
-        if args.calibrate:
+        if args.calibrate or args.calibrate_cogging:
             return
         board.set_target(0.0)
     finally:

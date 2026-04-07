@@ -8,6 +8,8 @@
 #include "ThermistorManager.hpp"
 #include "encoder_lut_r.h"
 #include "encoder_lut_l.h"
+#include "cogging_lut_r.h"
+#include "cogging_lut_l.h"
 
 // AS5600 with a 128-point lookup-table correction for eccentricity.
 // Generate the LUT headers with:
@@ -28,6 +30,16 @@ struct LutAS5600 : public MagneticSensorI2C {
     return raw - (lut[i0] + f * (lut[i1] - lut[i0]));
   }
 };
+
+// Interpolate a 128-point LUT keyed by electrical angle in [0, 2pi).
+static float lut_interp(float elec_angle, const float *lut, int n) {
+  float pos = fmodf(elec_angle, (float)TWO_PI) * n / TWO_PI;
+  if (pos < 0.0f) pos += n;
+  int i0 = (int)pos % n;
+  int i1 = (i0 + 1) % n;
+  float f = pos - (int)pos;
+  return lut[i0] + f * (lut[i1] - lut[i0]);
+}
 
 LutAS5600 as5600_r(ENCODER_LUT_R, 128);
 TwoWire &Wire_r = Wire;
@@ -272,7 +284,9 @@ void do_control()
   }
 
   motor_l.move(target_torque_l);
+  motor_l.voltage.q += lut_interp(motor_l.electricalAngle(), COGGING_LUT_L, 128);
   motor_r.move(target_torque_r);
+  motor_r.voltage.q += lut_interp(motor_r.electricalAngle(), COGGING_LUT_R, 128);
 }
 
 float low_pass_x_acc = 0.;

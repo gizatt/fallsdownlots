@@ -38,8 +38,20 @@
 #include <SimpleFOC.h>
 #include "encoder_lut_r.h"
 #include "encoder_lut_l.h"
+#include "cogging_lut_r.h"
+#include "cogging_lut_l.h"
 
 static constexpr int N_POLE_PAIRS = 7;
+
+// Interpolate a 128-point LUT keyed by electrical angle in [0, 2pi).
+static float lut_interp(float elec_angle, const float *lut, int n) {
+  float pos = fmodf(elec_angle, TWO_PI) * n / TWO_PI;
+  if (pos < 0.0f) pos += n;
+  int i0 = (int)pos % n;
+  int i1 = (i0 + 1) % n;
+  float f = pos - (int)pos;
+  return lut[i0] + f * (lut[i1] - lut[i0]);
+}
 
 // -----------------------------------------------------------------------
 // AS5600 with 128-point LUT correction.
@@ -74,10 +86,12 @@ struct LutAS5600 : public MagneticSensorI2C {
                      SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, 24, 25);
   LutAS5600        as5600(ENCODER_LUT_L, 128);
   BLDCDriver3PWM   driver(12, 13, 26, 11);
+  static const float *COGGING_LUT = COGGING_LUT_L;
 #else  // MOTOR_RIGHT (default)
   TwoWire         &Wire_motor = Wire;
   LutAS5600        as5600(ENCODER_LUT_R, 128);
   BLDCDriver3PWM   driver(6, 9, 10, 5);
+  static const float *COGGING_LUT = COGGING_LUT_R;
 #endif
 
 BLDCMotor motor(N_POLE_PAIRS, 12.0, 450);
@@ -315,10 +329,15 @@ void loop() {
 
   motor.move(target);
 
-  // Stream LUT-corrected angle for sysid accuracy.
-  Serial.printf("%lu,%.5f,%.4f,%.4f\n",
+  // Apply cogging feedforward. Added to voltage.q here so loopFOC picks it
+  // up on the next iteration (1-sample delay, negligible at 500 Hz).
+  motor.voltage.q += lut_interp(motor.electricalAngle(), COGGING_LUT, 128);
+
+  // Stream LUT-corrected angle; include voltage.q for cogging sweep analysis.
+  Serial.printf("%lu,%.5f,%.4f,%.4f,%.4f\n",
     t,
     as5600.getAngle(),
     motor.shaftVelocity(),
-    target);
+    target,
+    motor.voltage.q);
 }
