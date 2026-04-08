@@ -331,7 +331,11 @@ void loop() {
 
   // Apply cogging feedforward. Added to voltage.q here so loopFOC picks it
   // up on the next iteration (1-sample delay, negligible at 500 Hz).
-  motor.voltage.q += lut_interp(motor.electricalAngle(), COGGING_LUT, 128);
+  // Index by as5600.getAngle() * N_PP, NOT motor.electricalAngle(), so the
+  // phase matches exactly how the LUT was built in build_cogging_lut.py.
+  // motor.electricalAngle() adds a zero_electric_angle offset (set by initFOC)
+  // that is absent from the Python angle computation.
+  motor.voltage.q += lut_interp(as5600.getAngle() * N_POLE_PAIRS, COGGING_LUT, 128);
 
   // Stream LUT-corrected angle; include voltage.q for cogging sweep analysis.
   Serial.printf("%lu,%.5f,%.4f,%.4f,%.4f\n",

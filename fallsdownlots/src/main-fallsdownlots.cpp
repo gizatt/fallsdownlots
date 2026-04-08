@@ -284,9 +284,9 @@ void do_control()
   }
 
   motor_l.move(target_torque_l);
-  motor_l.voltage.q += lut_interp(motor_l.electricalAngle(), COGGING_LUT_L, 128);
+  motor_l.voltage.q += lut_interp(as5600_l.getAngle() * 7, COGGING_LUT_L, 128);
   motor_r.move(target_torque_r);
-  motor_r.voltage.q += lut_interp(motor_r.electricalAngle(), COGGING_LUT_R, 128);
+  motor_r.voltage.q += lut_interp(as5600_r.getAngle() * 7, COGGING_LUT_R, 128);
 }
 
 float low_pass_x_acc = 0.;
